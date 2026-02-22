@@ -1,0 +1,380 @@
+// Yeam.ai EHR — Prisma Schema
+// HIPAA note: No full SSNs stored; PHI fields are annotated below
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Enums ──────────────────────────────────────────────────────────────────
+
+enum AppointmentStatus {
+  SCHEDULED
+  CHECKED_IN
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+  NO_SHOW
+}
+
+enum EncounterStatus {
+  DRAFT
+  SIGNED
+  AMENDED
+  VOIDED
+}
+
+enum ClaimStatus {
+  PENDING
+  SCRUBBING
+  SUBMITTED
+  ACCEPTED
+  PAID
+  DENIED
+  APPEALED
+  VOIDED
+}
+
+enum PlanType {
+  HMO
+  PPO
+  EPO
+  POS
+  MEDICAID
+  MEDICARE
+  TRICARE
+  SELF_PAY
+}
+
+enum AgentName {
+  FRONT_DESK
+  CLINICAL_DOC
+  CLAIM_SCRUBBER
+  BILLING
+  ANALYTICS
+}
+
+enum AgentStatus {
+  THINKING
+  WORKING
+  COMPLETE
+  ESCALATED
+  ERROR
+}
+
+enum UserRole {
+  ADMIN
+  PROVIDER
+  FRONT_DESK
+  BILLING
+}
+
+// ─── NextAuth Tables ─────────────────────────────────────────────────────────
+
+model User {
+  id            String    @id @default(cuid())
+  name          String?
+  email         String    @unique
+  emailVerified DateTime?
+  image         String?
+  passwordHash  String?
+  role          UserRole  @default(FRONT_DESK)
+  accounts      Account[]
+  sessions      Session[]
+  agentLogs     AgentLog[]
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@map("users")
+}
+
+model Account {
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([provider, providerAccountId])
+  @@map("accounts")
+}
+
+model Session {
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("sessions")
+}
+
+model VerificationToken {
+  identifier String
+  token      String
+  expires    DateTime
+
+  @@id([identifier, token])
+  @@map("verification_tokens")
+}
+
+// ─── Domain: Payers ──────────────────────────────────────────────────────────
+
+model Payer {
+  id              String    @id @default(cuid())
+  name            String
+  payerId         String    @unique  // EDI payer ID
+  planType        PlanType
+  phone           String?
+  address         String?
+  claimsAddress   String?
+  electronicPayerId String?
+  active          Boolean   @default(true)
+  coverages       InsuranceCoverage[]
+  claims          Claim[]
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@map("payers")
+}
+
+// ─── Domain: Patients ────────────────────────────────────────────────────────
+
+model Patient {
+  id              String    @id @default(cuid())
+  mrn             String    @unique  // Medical Record Number
+  // PHI fields below
+  firstName       String
+  lastName        String
+  dateOfBirth     DateTime
+  gender          String
+  email           String?
+  phone           String?
+  address         String?
+  city            String?
+  state           String?
+  zip             String?
+  ssnLast4        String?   // PHI: last 4 digits only
+  preferredLanguage String? @default("en")
+  active          Boolean   @default(true)
+  coverages       InsuranceCoverage[]
+  appointments    Appointment[]
+  encounters      Encounter[]
+  claims          Claim[]
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@map("patients")
+}
+
+// ─── Domain: Insurance Coverages ─────────────────────────────────────────────
+
+model InsuranceCoverage {
+  id                String    @id @default(cuid())
+  patientId         String
+  payerId           String
+  memberId          String    // PHI: insurance member ID
+  groupNumber       String?
+  planName          String?
+  effectiveDate     DateTime
+  terminationDate   DateTime?
+  copay             Decimal?  @db.Decimal(8, 2)
+  deductible        Decimal?  @db.Decimal(10, 2)
+  deductibleMet     Decimal?  @db.Decimal(10, 2)
+  outOfPocketMax    Decimal?  @db.Decimal(10, 2)
+  outOfPocketMet    Decimal?  @db.Decimal(10, 2)
+  isPrimary         Boolean   @default(true)
+  active            Boolean   @default(true)
+  patient           Patient   @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  payer             Payer     @relation(fields: [payerId], references: [id])
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  @@map("insurance_coverages")
+}
+
+// ─── Domain: Providers ───────────────────────────────────────────────────────
+
+model Provider {
+  id              String    @id @default(cuid())
+  npi             String    @unique  // National Provider Identifier
+  firstName       String
+  lastName        String
+  credential      String?   // MD, DO, NP, PA, etc.
+  specialty       String?
+  email           String?
+  phone           String?
+  active          Boolean   @default(true)
+  appointments    Appointment[]
+  encounters      Encounter[]
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@map("providers")
+}
+
+// ─── Domain: Appointments ────────────────────────────────────────────────────
+
+model Appointment {
+  id              String              @id @default(cuid())
+  patientId       String
+  providerId      String
+  scheduledAt     DateTime
+  duration        Int                 @default(30)  // minutes
+  status          AppointmentStatus   @default(SCHEDULED)
+  appointmentType String?             // new-patient, follow-up, annual-wellness, etc.
+  chiefComplaint  String?
+  notes           String?
+  cancelledAt        DateTime?
+  cancellationReason String?
+  cancelledBy        String?    // stores user.id
+  encounter        Encounter?
+  patient         Patient             @relation(fields: [patientId], references: [id])
+  provider        Provider            @relation(fields: [providerId], references: [id])
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+
+  @@map("appointments")
+}
+
+// ─── Domain: Encounters ──────────────────────────────────────────────────────
+
+model Encounter {
+  id              String          @id @default(cuid())
+  appointmentId   String?         @unique
+  patientId       String
+  providerId      String
+  encounterDate   DateTime
+  status          EncounterStatus @default(DRAFT)
+  // PHI: clinical documentation
+  subjective      String?
+  objective       String?
+  assessment      String?
+  plan            String?
+  signedAt        DateTime?
+  signedBy        String?
+  diagnoses       Diagnosis[]
+  procedures      Procedure[]
+  claims          Claim[]
+  appointment     Appointment?    @relation(fields: [appointmentId], references: [id])
+  patient         Patient         @relation(fields: [patientId], references: [id])
+  provider        Provider        @relation(fields: [providerId], references: [id])
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  @@map("encounters")
+}
+
+// ─── Domain: Diagnoses ───────────────────────────────────────────────────────
+
+model Diagnosis {
+  id              String    @id @default(cuid())
+  encounterId     String
+  icdCode         String    // ICD-10-CM code
+  description     String
+  isPrimary       Boolean   @default(false)
+  sequence        Int       @default(1)
+  encounter       Encounter @relation(fields: [encounterId], references: [id], onDelete: Cascade)
+  createdAt       DateTime  @default(now())
+
+  @@map("diagnoses")
+}
+
+// ─── Domain: Procedures ──────────────────────────────────────────────────────
+
+model Procedure {
+  id              String    @id @default(cuid())
+  encounterId     String
+  cptCode         String    // CPT/HCPCS code
+  description     String
+  units           Int       @default(1)
+  fee             Decimal   @db.Decimal(10, 2)
+  modifier        String?
+  encounter       Encounter @relation(fields: [encounterId], references: [id], onDelete: Cascade)
+  createdAt       DateTime  @default(now())
+
+  @@map("procedures")
+}
+
+// ─── Domain: Claims ──────────────────────────────────────────────────────────
+
+model Claim {
+  id              String      @id @default(cuid())
+  claimNumber     String      @unique
+  patientId       String
+  payerId         String
+  encounterId     String?
+  status          ClaimStatus @default(PENDING)
+  totalCharge     Decimal     @db.Decimal(10, 2)
+  allowedAmount   Decimal?    @db.Decimal(10, 2)
+  paidAmount      Decimal?    @db.Decimal(10, 2)
+  patientBalance  Decimal?    @db.Decimal(10, 2)
+  serviceDate     DateTime
+  submittedAt     DateTime?
+  adjudicatedAt   DateTime?
+  denialReason    String?
+  notes           String?
+  events          ClaimEvent[]
+  patient         Patient     @relation(fields: [patientId], references: [id])
+  payer           Payer       @relation(fields: [payerId], references: [id])
+  encounter       Encounter?  @relation(fields: [encounterId], references: [id])
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  @@map("claims")
+}
+
+// ─── Domain: Claim Events ────────────────────────────────────────────────────
+
+model ClaimEvent {
+  id          String      @id @default(cuid())
+  claimId     String
+  status      ClaimStatus
+  notes       String?
+  agentName   AgentName?
+  automated   Boolean     @default(false)
+  claim       Claim       @relation(fields: [claimId], references: [id], onDelete: Cascade)
+  createdAt   DateTime    @default(now())
+
+  @@map("claim_events")
+}
+
+// ─── Domain: Agent Logs ──────────────────────────────────────────────────────
+
+model AgentLog {
+  id          String      @id @default(cuid())
+  taskId      String
+  agentName   AgentName
+  status      AgentStatus
+  intent      String
+  message     String
+  reasoning   String?
+  confidence  Float?
+  data        Json?
+  userId      String?
+  sessionId   String?
+  durationMs  Int?
+  user        User?       @relation(fields: [userId], references: [id])
+  createdAt   DateTime    @default(now())
+
+  @@index([createdAt(sort: Desc)])
+  @@index([userId])
+  @@map("agent_logs")
+}
