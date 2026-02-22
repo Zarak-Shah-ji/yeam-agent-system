@@ -19,13 +19,13 @@ export function getModel(systemInstruction: string) {
 
 // Fast intent classification (cheap + low latency)
 export function getFlashModel() {
-  return getGenAI().getGenerativeModel({ model: 'gemini-2.0-flash' })
+  return getGenAI().getGenerativeModel({ model: 'gemini-2.5-flash' })
 }
 
 // High-capability model for agent responses with function calling
 export function getProModel(systemInstruction: string) {
   return getGenAI().getGenerativeModel({
-    model: 'gemini-2.5-pro-preview-06-05',
+    model: 'gemini-2.5-flash',
     systemInstruction,
   })
 }
