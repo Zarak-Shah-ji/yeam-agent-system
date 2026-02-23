@@ -15,27 +15,79 @@ export async function executeMedicaidFunction(
   switch (name) {
     // ── 1. search_providers ───────────────────────────────────────────────────
     case 'search_providers': {
-      const query = args.query ? String(args.query).trim() : undefined
-      const city  = args.city  ? String(args.city).trim()  : undefined
-      const zip   = args.zip   ? String(args.zip).trim()   : undefined
-      const limit = Math.min(Number(args.limit ?? 10), 50)
+      const query  = args.query   ? String(args.query).trim()   : undefined
+      const city   = args.city    ? String(args.city).trim()    : undefined
+      const zip    = args.zip     ? String(args.zip).trim()     : undefined
+      const sortBy = args.sort_by ? String(args.sort_by).trim() : 'total_claims'
+      const limit  = Math.min(Number(args.limit ?? 10), 50)
 
-      const where: Prisma.MedicaidProviderWhereInput = {}
+      // Build provider-side filters
+      const providerWhere: Prisma.MedicaidProviderWhereInput = {}
       if (query) {
-        where.OR = [
+        providerWhere.OR = [
           { orgName:   { contains: query, mode: 'insensitive' } },
           { firstName: { contains: query, mode: 'insensitive' } },
           { lastName:  { contains: query, mode: 'insensitive' } },
           { npi:       { equals: query } },
         ]
       }
-      if (city) where.city = { contains: city, mode: 'insensitive' }
-      if (zip)  where.zip  = { startsWith: zip }
+      if (city) providerWhere.city = { contains: city, mode: 'insensitive' }
+      if (zip)  providerWhere.zip  = { startsWith: zip }
 
+      // When a city/zip filter is present, sort by claim volume on the DB side
+      // so "top billers in Houston" returns the highest-volume providers first.
+      if (city || zip) {
+        // Step 1: get all NPIs matching the geographic filter
+        const matchingProviders = await prisma.medicaidProvider.findMany({
+          where: providerWhere,
+          select: { npi: true },
+        })
+        const npis = matchingProviders.map(p => p.npi)
+
+        // Step 2: aggregate + sort by the requested metric
+        const stats = await prisma.medicaidClaimsAgg.groupBy({
+          by: ['billingNpi'],
+          where: { billingNpi: { in: npis } },
+          _sum: { numClaims: true, paidAmount: true },
+          orderBy: sortBy === 'total_paid'
+            ? { _sum: { paidAmount: 'desc' } }
+            : { _sum: { numClaims: 'desc' } },
+          take: limit,
+        })
+
+        // Step 3: fetch full provider details for the top NPIs
+        const topNpis     = stats.map(s => s.billingNpi)
+        const providers   = await prisma.medicaidProvider.findMany({
+          where: { npi: { in: topNpis } },
+        })
+        const providerMap = new Map(providers.map(p => [p.npi, p]))
+        const statsMap    = new Map(stats.map(s => [s.billingNpi, s]))
+
+        // Preserve the claim-sorted order
+        const ordered = topNpis
+          .map(npi => providerMap.get(npi))
+          .filter(Boolean) as typeof providers
+
+        return {
+          providers: ordered.map(p => ({
+            npi:         p.npi,
+            name:        p.orgName ?? `${p.firstName ?? ''} ${p.lastName ?? ''}`.trim(),
+            credentials: p.credentials,
+            city:        p.city,
+            state:       p.state,
+            zip:         p.zip,
+            totalClaims: statsMap.get(p.npi)?._sum.numClaims ?? 0,
+            totalPaid:   Number(statsMap.get(p.npi)?._sum.paidAmount ?? 0),
+          })),
+          total: ordered.length,
+          sortedBy: sortBy,
+        }
+      }
+
+      // No city/zip — standard text search sorted alphabetically
       const providers = await prisma.medicaidProvider.findMany({
-        where, take: limit, orderBy: { orgName: 'asc' },
+        where: providerWhere, take: limit, orderBy: { orgName: 'asc' },
       })
-
       const npis  = providers.map(p => p.npi)
       const stats = await prisma.medicaidClaimsAgg.groupBy({
         by: ['billingNpi'],

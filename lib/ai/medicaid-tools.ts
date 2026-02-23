@@ -4,14 +4,15 @@ export const medicaidFunctionDeclarations: FunctionDeclaration[] = [
   {
     name: 'search_providers',
     description:
-      'Search Texas Medicaid providers by name, NPI, city, zip, or credentials. Use when the user asks about a doctor, clinic, or provider, or wants to look up who billed what in the statewide Medicaid data.',
+      'Search Texas Medicaid providers by name, NPI, city, zip, or credentials. Also use this to find TOP BILLERS in a city — pass city and sort_by="total_claims" or sort_by="total_paid". Returns each provider with totalClaims and totalPaid. Use when the user asks about a doctor, clinic, top billers, highest spenders, or wants to look up who billed what.',
     parameters: {
       type: SchemaType.OBJECT,
       properties: {
-        query: { type: SchemaType.STRING, description: 'Provider name, organization name, or NPI to search' },
-        city:  { type: SchemaType.STRING, description: 'City name to filter by (e.g. Houston, Dallas)' },
-        zip:   { type: SchemaType.STRING, description: 'Zip code to filter by' },
-        limit: { type: SchemaType.NUMBER, description: 'Max results to return (default 10)' },
+        query:   { type: SchemaType.STRING, description: 'Provider name, organization name, or NPI to search' },
+        city:    { type: SchemaType.STRING, description: 'City name to filter by (e.g. Houston, Dallas)' },
+        zip:     { type: SchemaType.STRING, description: 'Zip code to filter by' },
+        sort_by: { type: SchemaType.STRING, description: 'Sort results by: "total_claims" (default) or "total_paid"' },
+        limit:   { type: SchemaType.NUMBER, description: 'Max results to return (default 10)' },
       },
     },
   },
