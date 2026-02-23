@@ -16,6 +16,9 @@ out/
 dist/
 build/
 
+# Claude Code (may contain tool-use history with secrets)
+.claude/
+
 # Misc
 .DS_Store
 *.tsbuildinfo
