@@ -356,6 +356,119 @@ model ClaimEvent {
   @@map("claim_events")
 }
 
+// ─── Medicaid Dataset Tables ─────────────────────────────────────────────────
+
+model MedicaidProvider {
+  npi               String   @id           // NPI — unique provider identifier
+  orgName           String?               // billing_name / servicing_name
+  firstName         String?
+  middleName        String?
+  lastName          String?
+  credentials       String?               // MD, DO, NP, etc.
+  orgNameOther      String?
+  addrLine1         String?
+  addrLine2         String?
+  city              String?
+  state             String?
+  zip               String?
+  phone             String?
+  billedClaims      MedicaidClaimsAgg[]   @relation("BillingProvider")
+  servicedClaims    MedicaidClaimsAgg[]   @relation("ServicingProvider")
+  medicaidPatients  MedicaidPatient[]
+  medicaidEncountersBilling  MedicaidEncounter[] @relation("BillingEncounterProvider")
+  medicaidEncountersServicing MedicaidEncounter[] @relation("ServicingEncounterProvider")
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@map("medicaid_providers")
+}
+
+model MedicaidClaimsAgg {
+  id                String   @id @default(cuid())
+  billingNpi        String
+  servicingNpi      String?
+  procCode          String                // HCPCS code (proc_cd column)
+  yearMonth         String                // e.g. "2018-01" (month column)
+  numBeneficiaries  Int?
+  numClaims         Int?
+  paidAmount        Decimal? @db.Decimal(12, 2)
+  aoFirstName       String?
+  aoMiddleName      String?
+  aoLastName        String?
+  billingProvider   MedicaidProvider  @relation("BillingProvider",   fields: [billingNpi],   references: [npi])
+  servicingProvider MedicaidProvider? @relation("ServicingProvider", fields: [servicingNpi], references: [npi])
+  createdAt         DateTime @default(now())
+
+  @@index([billingNpi])
+  @@index([servicingNpi])
+  @@index([procCode])
+  @@index([yearMonth])
+  @@index([billingNpi, procCode, yearMonth])
+  @@map("medicaid_claims_agg")
+}
+
+model MedicaidPatient {
+  id                  String   @id @default(cuid())
+  mrn                 String   @unique      // e.g. "MRN-TX-000001"
+  firstName           String
+  lastName            String
+  dateOfBirth         DateTime
+  gender              String?
+  phone               String?
+  email               String?
+  addrLine1           String?
+  city                String?
+  state               String?  @default("TX")
+  zip                 String?
+  insuranceType       String?  @default("Medicaid")
+  insuranceId         String?
+  insuranceStatus     String?  @default("active")
+  primaryProviderNpi  String?
+  primaryProvider     MedicaidProvider?   @relation(fields: [primaryProviderNpi], references: [npi])
+  encounters          MedicaidEncounter[]
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  @@index([primaryProviderNpi])
+  @@map("medicaid_patients")
+}
+
+model MedicaidEncounter {
+  id              String   @id @default(cuid())
+  patientId       String
+  providerNpi     String
+  billingNpi      String?
+  encounterDate   DateTime
+  procCode        String
+  diagnosisCodes  String[]
+  status          String?  @default("completed")
+  claimStatus     String?  @default("clean")
+  paidAmount      Decimal? @db.Decimal(12, 2)
+  notes           String?
+  patient         MedicaidPatient  @relation(fields: [patientId],   references: [id])
+  provider        MedicaidProvider @relation("ServicingEncounterProvider", fields: [providerNpi], references: [npi])
+  billingProvider MedicaidProvider? @relation("BillingEncounterProvider",  fields: [billingNpi],  references: [npi])
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([patientId])
+  @@index([providerNpi])
+  @@index([claimStatus])
+  @@index([encounterDate])
+  @@map("medicaid_encounters")
+}
+
+model HcpcsCode {
+  id          String   @id @default(cuid())
+  code        String   @unique
+  description String?
+  category    String?
+  avgCostTx   Decimal? @db.Decimal(10, 2)
+  createdAt   DateTime @default(now())
+
+  @@map("hcpcs_codes")
+}
+
 // ─── Domain: Agent Logs ──────────────────────────────────────────────────────
 
 model AgentLog {

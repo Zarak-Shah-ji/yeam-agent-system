@@ -4,6 +4,8 @@ import { type Prisma } from '@prisma/client'
 import { auth } from '@/lib/auth'
 import { prisma } from '@/lib/db'
 import { GEMINI_AVAILABLE, getFlashModel, getProModel } from '@/lib/agents/gemini-client'
+import { medicaidFunctionDeclarations } from '@/lib/ai/medicaid-tools'
+import { executeMedicaidFunction } from '@/lib/ai/tool-executor'
 import { startOfDay, endOfDay } from 'date-fns'
 
 export const runtime = 'nodejs'
@@ -37,7 +39,7 @@ const SYSTEM_PROMPTS: Record<AgentName, string> = {
 
   'billing': `You are the Billing Agent for Molina Family Health Clinic. Handle denied claims, advise on appeal strategies, track payments, and support revenue cycle operations. Use claim_lookup to find denied or pending claims and advise on next steps.`,
 
-  'analytics': `You are the Analytics Agent for Molina Family Health Clinic. Generate reports on denial rates, revenue, claim counts, and other key metrics. Use the metrics_query tool to retrieve real-time data and present it clearly.`,
+  'analytics': `You are the Analytics Agent for Molina Family Health Clinic. Generate reports on denial rates, revenue, claim counts, and other key metrics. You also have access to statewide Texas Medicaid data covering 11M+ claims from 2018-2024. Use get_medicaid_dashboard, get_provider_analytics, search_providers, detect_anomalies, and get_procedure_info to answer questions about statewide provider trends, procedure costs, and billing patterns. Use metrics_query for clinic-specific EHR data.`,
 }
 
 const CLASSIFY_PROMPT = `You are an intent router for a medical clinic EHR system.
@@ -47,7 +49,7 @@ front-desk   → patient check-in, appointment scheduling/cancellation, patient 
 clinical-doc → SOAP notes, encounter documentation, ICD-10/CPT coding, clinical questions
 claim-scrubber → claim validation, scrubbing, status checks, billing code review
 billing      → denied claims, payments, appeals, outstanding balances, revenue cycle
-analytics    → reports, metrics, denial rates, revenue statistics, trends
+analytics    → reports, metrics, denial rates, revenue statistics, trends, Medicaid provider analysis, statewide billing data, procedure code costs, provider anomalies, top billers
 
 Message: `
 
@@ -55,6 +57,7 @@ Message: `
 
 const TOOLS: FunctionDeclarationsTool[] = [{
   functionDeclarations: [
+    ...medicaidFunctionDeclarations,
     {
       name: 'patient_lookup',
       description: 'Look up a patient by name or MRN. Returns matching patient records.',
@@ -315,8 +318,12 @@ async function executeFunction(name: string, args: Record<string, unknown>): Pro
       return { error: `Unknown metric "${metric}". Supported: denial_rate, revenue, claims_count` }
     }
 
-    default:
+    default: {
+      // Fall through to Medicaid tool executor
+      const medicaidResult = await executeMedicaidFunction(name, args)
+      if (medicaidResult !== null) return medicaidResult
       return { error: `Unknown function: ${name}` }
+    }
   }
 }
 
@@ -400,11 +407,15 @@ export async function POST(req: NextRequest) {
               const fc = part.functionCall!
               send({ type: 'tool_call', tool: fc.name })
               const fnResult = await executeFunction(fc.name, fc.args as Record<string, unknown>)
-              const count = Array.isArray((fnResult as Record<string, unknown>)?.patients)
-                ? ((fnResult as Record<string, unknown>).patients as unknown[]).length
-                : Array.isArray((fnResult as Record<string, unknown>)?.claims)
-                ? ((fnResult as Record<string, unknown>).claims as unknown[]).length
-                : undefined
+              const r = fnResult as Record<string, unknown>
+              const count =
+                Array.isArray(r?.patients)    ? (r.patients   as unknown[]).length :
+                Array.isArray(r?.providers)   ? (r.providers  as unknown[]).length :
+                Array.isArray(r?.claims)      ? (r.claims     as unknown[]).length :
+                Array.isArray(r?.encounters)  ? (r.encounters as unknown[]).length :
+                Array.isArray(r?.anomalies)   ? (r.anomalies  as unknown[]).length :
+                typeof r?.total === 'number'  ? r.total :
+                undefined
               send({ type: 'tool_result', tool: fc.name, count })
               return {
                 functionResponse: {
