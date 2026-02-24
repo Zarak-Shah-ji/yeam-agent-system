@@ -11,8 +11,8 @@ export default auth((req) => {
     return NextResponse.next()
   }
 
-  // Protect API tRPC routes
-  if (pathname.startsWith('/api/trpc') && !isLoggedIn) {
+  // Return 401 (not a redirect) for unauthenticated API calls
+  if (pathname.startsWith('/api/') && !isLoggedIn) {
     return new NextResponse('Unauthorized', { status: 401 })
   }
 

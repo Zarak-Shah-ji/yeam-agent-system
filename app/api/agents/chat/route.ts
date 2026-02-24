@@ -365,6 +365,15 @@ export async function POST(req: NextRequest) {
   const message = body.message?.trim()
   if (!message) return new Response('Missing message', { status: 400 })
 
+  // Guard: cap message + history size to prevent API cost abuse
+  if (message.length > 2000) {
+    return new Response('Message too long (max 2000 chars)', { status: 400 })
+  }
+  const history = (body.history ?? []).slice(-20).map(h => ({
+    ...h,
+    content: h.content.slice(0, 2000),
+  }))
+
   const encoder = new TextEncoder()
   const startTime = Date.now()
 
@@ -396,12 +405,12 @@ export async function POST(req: NextRequest) {
         send({ type: 'agent', name: agentName, message: `${agentLabel} Agent is thinking...` })
 
         // ── Step 2: Build conversation history ──
-        const history: Content[] = (body.history ?? []).map(h => ({
+        const geminiHistory: Content[] = history.map(h => ({
           role: h.role === 'assistant' ? 'model' : 'user',
           parts: [{ text: h.content }],
         }))
         const contents: Content[] = [
-          ...history,
+          ...geminiHistory,
           { role: 'user', parts: [{ text: message }] },
         ]
 
