@@ -19,16 +19,21 @@ const STATUS_LABELS: Record<string, { label: string; variant: 'default' | 'succe
   COMPLETED: { label: 'Completed', variant: 'success' },
   CANCELLED: { label: 'Cancelled', variant: 'destructive' },
   NO_SHOW: { label: 'No Show', variant: 'outline' },
+  SUBMITTED: { label: 'Submitted', variant: 'info' },
+  PAID: { label: 'Paid', variant: 'success' },
+  DENIED: { label: 'Denied', variant: 'destructive' },
+  SCRUBBING: { label: 'Scrubbing', variant: 'warning' },
+  APPEALED: { label: 'Appealed', variant: 'secondary' },
 }
 
 export function AppointmentsView() {
-  const [date, setDate] = useState(format(new Date(), 'yyyy-MM-dd'))
+  const [date, setDate] = useState('')
   const [statusFilter, setStatusFilter] = useState('ALL')
   const [cancellingId, setCancellingId] = useState<string | null>(null)
 
   const utils = trpc.useUtils()
   const { data, isLoading } = trpc.appointments.list.useQuery({
-    date,
+    date: date || undefined,
     status: statusFilter !== 'ALL' ? statusFilter : undefined,
     limit: 50,
   })
@@ -163,7 +168,7 @@ export function AppointmentsView() {
           {!isLoading && appointments.length === 0 && (
             <div className="py-12 text-center">
               <Calendar className="h-10 w-10 text-gray-300 mx-auto mb-3" />
-              <p className="text-sm text-gray-500">No appointments for {format(new Date(date + 'T00:00:00'), 'MMMM d, yyyy')}</p>
+              <p className="text-sm text-gray-500">No appointments found{date ? ` for ${format(new Date(date + 'T00:00:00'), 'MMMM d, yyyy')}` : ''}</p>
             </div>
           )}
         </CardContent>

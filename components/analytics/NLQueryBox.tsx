@@ -7,10 +7,12 @@ import { Textarea } from '@/components/ui/textarea'
 import { Card, CardContent } from '@/components/ui/card'
 
 const SUGGESTIONS = [
-  'What was our denial rate last month?',
-  'Which payer has the highest rejection rate?',
-  'Show me top diagnoses by visit count',
-  'How much AR is over 90 days?',
+  'What is our current denial rate?',
+  'Show me revenue trends for the last 30 days',
+  'How do our collection rates compare to the industry benchmark?',
+  'What\'s our AR balance right now?',
+  'Give me a performance report on claims',
+  'Are there any anomalies in our denial data?',
 ]
 
 export function NLQueryBox() {

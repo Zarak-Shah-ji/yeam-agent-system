@@ -3,6 +3,16 @@ import { TRPCError } from '@trpc/server'
 import { protectedProcedure, router } from '../trpc'
 import { startOfDay, endOfDay } from 'date-fns'
 
+const STATUS_MAP: Record<string, string> = {
+  clean: 'SUBMITTED', paid: 'PAID', denied: 'DENIED',
+  flagged: 'SCRUBBING', resubmitted: 'APPEALED',
+}
+const mapClaimStatus = (s: string | null) => STATUS_MAP[s ?? ''] ?? 'SUBMITTED'
+
+const mapProvider = (p: { npi: string; firstName: string | null; lastName: string | null; credentials: string | null }) => ({
+  id: p.npi, firstName: p.firstName ?? '', lastName: p.lastName ?? '', credential: p.credentials ?? '',
+})
+
 export const appointmentsRouter = router({
   list: protectedProcedure
     .input(z.object({
@@ -15,32 +25,52 @@ export const appointmentsRouter = router({
     .query(async ({ ctx, input }) => {
       const { date, status, providerId, limit = 50, cursor } = input ?? {}
 
-      let dateFilter = {}
+      let dateFilter: { encounterDate?: { gte: Date; lte: Date } } = {}
       if (date) {
         const d = new Date(date + 'T00:00:00')
-        dateFilter = { scheduledAt: { gte: startOfDay(d), lte: endOfDay(d) } }
+        dateFilter = { encounterDate: { gte: startOfDay(d), lte: endOfDay(d) } }
       }
 
-      const appointments = await ctx.prisma.appointment.findMany({
+      // Map UI status to claimStatus if provided
+      const UI_TO_CLAIM: Record<string, string> = {
+        SUBMITTED: 'clean', PAID: 'paid', DENIED: 'denied',
+        SCRUBBING: 'flagged', APPEALED: 'resubmitted',
+        SCHEDULED: 'clean', CHECKED_IN: 'clean', IN_PROGRESS: 'flagged',
+        COMPLETED: 'paid', CANCELLED: 'denied',
+      }
+      const claimStatusFilter = status ? { claimStatus: UI_TO_CLAIM[status] ?? status } : {}
+
+      const encounters = await ctx.prisma.medicaidEncounter.findMany({
         where: {
           ...dateFilter,
-          ...(status ? { status: status as 'SCHEDULED' | 'CHECKED_IN' | 'IN_PROGRESS' | 'COMPLETED' | 'CANCELLED' | 'NO_SHOW' } : {}),
-          ...(providerId ? { providerId } : {}),
+          ...claimStatusFilter,
+          ...(providerId ? { providerNpi: providerId } : {}),
         },
         include: {
           patient: { select: { id: true, firstName: true, lastName: true, mrn: true, dateOfBirth: true } },
-          provider: { select: { id: true, firstName: true, lastName: true, credential: true } },
+          provider: { select: { npi: true, firstName: true, lastName: true, credentials: true } },
         },
-        orderBy: { scheduledAt: 'asc' },
+        orderBy: { encounterDate: 'desc' },
         take: limit + 1,
         cursor: cursor ? { id: cursor } : undefined,
       })
 
       let nextCursor: string | undefined
-      if (appointments.length > limit) {
-        const next = appointments.pop()
+      if (encounters.length > limit) {
+        const next = encounters.pop()
         nextCursor = next?.id
       }
+
+      const appointments = encounters.map(e => ({
+        id: e.id,
+        scheduledAt: e.encounterDate,
+        appointmentType: e.procCode,
+        duration: 30,
+        status: mapClaimStatus(e.claimStatus ?? null),
+        chiefComplaint: e.diagnosisCodes[0] ?? null,
+        patient: e.patient,
+        provider: mapProvider(e.provider),
+      }))
 
       return { appointments, nextCursor }
     }),
@@ -48,40 +78,62 @@ export const appointmentsRouter = router({
   getById: protectedProcedure
     .input(z.object({ id: z.string() }))
     .query(async ({ ctx, input }) => {
-      return ctx.prisma.appointment.findUnique({
+      const enc = await ctx.prisma.medicaidEncounter.findUnique({
         where: { id: input.id },
         include: {
           patient: true,
           provider: true,
-          encounter: { include: { diagnoses: true, procedures: true } },
         },
       })
+      if (!enc) return null
+      return {
+        id: enc.id,
+        scheduledAt: enc.encounterDate,
+        appointmentType: enc.procCode,
+        duration: 30,
+        status: mapClaimStatus(enc.claimStatus ?? null),
+        chiefComplaint: enc.diagnosisCodes[0] ?? null,
+        patient: enc.patient,
+        provider: mapProvider(enc.provider),
+      }
     }),
 
   checkIn: protectedProcedure
     .input(z.object({ id: z.string() }))
     .mutation(async ({ ctx, input }) => {
-      const appt = await ctx.prisma.appointment.findUnique({ where: { id: input.id } })
-      if (!appt) throw new TRPCError({ code: 'NOT_FOUND' })
-      if (appt.status !== 'CHECKED_IN' && appt.status !== 'SCHEDULED') {
-        // only allow from SCHEDULED
-      }
-      return ctx.prisma.appointment.update({
+      const enc = await ctx.prisma.medicaidEncounter.findUnique({ where: { id: input.id } })
+      if (!enc) throw new TRPCError({ code: 'NOT_FOUND' })
+      const updated = await ctx.prisma.medicaidEncounter.update({
         where: { id: input.id },
-        data: { status: 'CHECKED_IN' },
+        data: { claimStatus: 'clean' },
         include: {
           patient: { select: { id: true, firstName: true, lastName: true, mrn: true, dateOfBirth: true } },
-          provider: { select: { id: true, firstName: true, lastName: true, credential: true } },
+          provider: { select: { npi: true, firstName: true, lastName: true, credentials: true } },
         },
       })
+      return {
+        id: updated.id,
+        scheduledAt: updated.encounterDate,
+        appointmentType: updated.procCode,
+        duration: 30,
+        status: mapClaimStatus(updated.claimStatus ?? null),
+        chiefComplaint: updated.diagnosisCodes[0] ?? null,
+        patient: updated.patient,
+        provider: mapProvider(updated.provider),
+      }
     }),
 
   updateStatus: protectedProcedure
     .input(z.object({ id: z.string(), status: z.string() }))
     .mutation(async ({ ctx, input }) => {
-      return ctx.prisma.appointment.update({
+      const UI_TO_CLAIM: Record<string, string> = {
+        SUBMITTED: 'clean', PAID: 'paid', DENIED: 'denied',
+        SCRUBBING: 'flagged', APPEALED: 'resubmitted',
+      }
+      const claimStatus = UI_TO_CLAIM[input.status] ?? input.status
+      return ctx.prisma.medicaidEncounter.update({
         where: { id: input.id },
-        data: { status: input.status as 'SCHEDULED' | 'CHECKED_IN' | 'IN_PROGRESS' | 'COMPLETED' | 'CANCELLED' | 'NO_SHOW' },
+        data: { claimStatus },
       })
     }),
 
@@ -92,11 +144,8 @@ export const appointmentsRouter = router({
       reasonNote: z.string().max(500).optional(),
     }))
     .mutation(async ({ ctx, input }) => {
-      const appt = await ctx.prisma.appointment.findUnique({ where: { id: input.id } })
-      if (!appt) throw new TRPCError({ code: 'NOT_FOUND' })
-      if (appt.status === 'COMPLETED' || appt.status === 'CHECKED_IN')
-        throw new TRPCError({ code: 'BAD_REQUEST', message: `Cannot cancel a ${appt.status} appointment.` })
-      if (appt.status === 'CANCELLED') return appt  // idempotent
+      const enc = await ctx.prisma.medicaidEncounter.findUnique({ where: { id: input.id } })
+      if (!enc) throw new TRPCError({ code: 'NOT_FOUND' })
 
       const LABELS: Record<string, string> = {
         PATIENT_REQUEST: 'Patient Request', NO_SHOW: 'No Show',
@@ -106,21 +155,18 @@ export const appointmentsRouter = router({
         ? `${LABELS[input.reasonType]}: ${input.reasonNote}`
         : LABELS[input.reasonType]
 
-      const updated = await ctx.prisma.appointment.update({
+      const updated = await ctx.prisma.medicaidEncounter.update({
         where: { id: input.id },
         data: {
-          status: 'CANCELLED',
-          cancelledAt: new Date(),
-          cancellationReason,
-          cancelledBy: ctx.session.user?.id,
+          claimStatus: 'denied',
+          notes: enc.notes ? enc.notes + '\n\nCancelled: ' + cancellationReason : 'Cancelled: ' + cancellationReason,
         },
         include: {
           patient: { select: { id: true, firstName: true, lastName: true, mrn: true, dateOfBirth: true } },
-          provider: { select: { id: true, firstName: true, lastName: true, credential: true } },
+          provider: { select: { npi: true, firstName: true, lastName: true, credentials: true } },
         },
       })
 
-      // Fire-and-forget agent log (same pattern as base-agent.ts)
       ctx.prisma.agentLog.create({
         data: {
           taskId: `cancel-${input.id}`,
@@ -132,6 +178,15 @@ export const appointmentsRouter = router({
         },
       }).catch(console.error)
 
-      return updated
+      return {
+        id: updated.id,
+        scheduledAt: updated.encounterDate,
+        appointmentType: updated.procCode,
+        duration: 30,
+        status: 'CANCELLED',
+        chiefComplaint: updated.diagnosisCodes[0] ?? null,
+        patient: updated.patient,
+        provider: mapProvider(updated.provider),
+      }
     }),
 })

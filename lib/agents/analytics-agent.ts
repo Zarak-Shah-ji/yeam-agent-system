@@ -31,8 +31,8 @@ export class AnalyticsAgent extends BaseAgent {
       await new Promise(r => setTimeout(r, 500))
       yield {
         taskId: task.id, agentName: this.name, status: 'complete',
-        message: 'Metrics: 8 patients today, $2,150 pending claims, 12% denial rate (above 8% benchmark). Recommend: Review top denial reasons and resubmit corrected claims within 30 days.',
-        data: { patientsToday: 8, pendingClaims: 2150, denialRate: 0.12 },
+        message: 'Metrics: 6,000 enrolled patients, ~32,000 pending claims, 8% denial rate (at benchmark). Recommend: Focus on flagged claims for timely resubmission to maintain collection rate.',
+        data: { totalPatients: 6000, pendingClaims: 32000, denialRate: 0.08 },
         confidence: 0.88, reasoning: 'Stub (no GEMINI_API_KEY)', timestamp: new Date(),
       }
       return

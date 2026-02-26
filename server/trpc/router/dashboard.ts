@@ -1,53 +1,49 @@
 import { protectedProcedure, router } from '../trpc'
-import { startOfDay, endOfDay } from 'date-fns'
+
+const mapProvider = (p: { npi: string; firstName: string | null; lastName: string | null; credentials: string | null }) => ({
+  id: p.npi, firstName: p.firstName ?? '', lastName: p.lastName ?? '', credential: p.credentials ?? '',
+})
 
 export const dashboardRouter = router({
   getTodayAppointments: protectedProcedure.query(async ({ ctx }) => {
-    const now = new Date()
-    const appointments = await ctx.prisma.appointment.findMany({
-      where: {
-        scheduledAt: {
-          gte: startOfDay(now),
-          lte: endOfDay(now),
-        },
-      },
+    const encounters = await ctx.prisma.medicaidEncounter.findMany({
+      orderBy: { encounterDate: 'desc' },
+      take: 10,
       include: {
         patient: {
           select: { id: true, firstName: true, lastName: true, mrn: true, dateOfBirth: true },
         },
         provider: {
-          select: { id: true, firstName: true, lastName: true, credential: true },
+          select: { npi: true, firstName: true, lastName: true, credentials: true },
         },
       },
-      orderBy: { scheduledAt: 'asc' },
     })
-    return appointments
+
+    return encounters.map(e => ({
+      id: e.id,
+      scheduledAt: e.encounterDate,
+      appointmentType: e.procCode,
+      duration: 30,
+      status: 'COMPLETED',
+      chiefComplaint: e.diagnosisCodes[0] ?? null,
+      patient: e.patient,
+      provider: mapProvider(e.provider),
+    }))
   }),
 
   getMetrics: protectedProcedure.query(async ({ ctx }) => {
-    const now = new Date()
-    const todayStart = startOfDay(now)
-    const todayEnd = endOfDay(now)
-
-    const [patientsToday, claimsPending, claimsDenied, claimsTotal, arBalance] = await Promise.all([
-      ctx.prisma.appointment.count({
-        where: {
-          scheduledAt: { gte: todayStart, lte: todayEnd },
-          status: { not: 'CANCELLED' },
-        },
+    const [patientsToday, claimsPending, claimsDenied, claimsTotal, arAgg] = await Promise.all([
+      ctx.prisma.medicaidPatient.count(),
+      ctx.prisma.medicaidEncounter.count({
+        where: { claimStatus: { in: ['clean', 'flagged'] } },
       }),
-      ctx.prisma.claim.count({
-        where: { status: { in: ['PENDING', 'SCRUBBING', 'SUBMITTED', 'ACCEPTED'] } },
+      ctx.prisma.medicaidEncounter.count({
+        where: { claimStatus: 'denied' },
       }),
-      ctx.prisma.claim.count({
-        where: { status: 'DENIED' },
-      }),
-      ctx.prisma.claim.count({
-        where: { status: { not: 'VOIDED' } },
-      }),
-      ctx.prisma.claim.aggregate({
-        _sum: { patientBalance: true },
-        where: { status: { in: ['SUBMITTED', 'ACCEPTED', 'PAID'] } },
+      ctx.prisma.medicaidEncounter.count(),
+      ctx.prisma.medicaidEncounter.aggregate({
+        _sum: { paidAmount: true },
+        where: { claimStatus: { in: ['clean', 'paid'] } },
       }),
     ])
 
@@ -57,7 +53,7 @@ export const dashboardRouter = router({
       patientsToday,
       claimsPending,
       denialRate: Math.round(denialRate * 100),
-      arBalance: arBalance._sum.patientBalance?.toNumber() ?? 0,
+      arBalance: arAgg._sum.paidAmount?.toNumber() ?? 0,
     }
   }),
 

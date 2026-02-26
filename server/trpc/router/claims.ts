@@ -2,6 +2,18 @@ import { z } from 'zod'
 import { TRPCError } from '@trpc/server'
 import { protectedProcedure, router } from '../trpc'
 
+const STATUS_MAP: Record<string, string> = {
+  clean: 'SUBMITTED', paid: 'PAID', denied: 'DENIED',
+  flagged: 'SCRUBBING', resubmitted: 'APPEALED',
+}
+const mapClaimStatus = (s: string | null) => STATUS_MAP[s ?? ''] ?? 'SUBMITTED'
+
+// Reverse map: UI status → claimStatus string
+const UI_TO_CLAIM: Record<string, string> = {
+  SUBMITTED: 'clean', PAID: 'paid', DENIED: 'denied',
+  SCRUBBING: 'flagged', APPEALED: 'resubmitted',
+}
+
 export const claimsRouter = router({
   list: protectedProcedure
     .input(z.object({
@@ -13,66 +25,89 @@ export const claimsRouter = router({
     .query(async ({ ctx, input }) => {
       const { status, patientId, limit = 30, cursor } = input ?? {}
 
-      type ClaimStatusType = 'PENDING' | 'SCRUBBING' | 'SUBMITTED' | 'ACCEPTED' | 'PAID' | 'DENIED' | 'APPEALED' | 'VOIDED'
-      let statusFilter: { status?: ClaimStatusType | { in: ClaimStatusType[] } } = {}
+      let claimStatusFilter: { claimStatus?: string | { in: string[] } } = {}
       if (status) {
-        statusFilter = Array.isArray(status)
-          ? { status: { in: status as ClaimStatusType[] } }
-          : { status: status as ClaimStatusType }
+        if (Array.isArray(status)) {
+          const mapped = status.map(s => UI_TO_CLAIM[s] ?? s).filter(Boolean)
+          claimStatusFilter = { claimStatus: { in: mapped } }
+        } else {
+          claimStatusFilter = { claimStatus: UI_TO_CLAIM[status] ?? status }
+        }
       }
 
-      const claims = await ctx.prisma.claim.findMany({
+      const encounters = await ctx.prisma.medicaidEncounter.findMany({
         where: {
-          ...statusFilter,
+          ...claimStatusFilter,
           ...(patientId ? { patientId } : {}),
         },
         include: {
           patient: { select: { id: true, firstName: true, lastName: true, mrn: true } },
-          payer: { select: { id: true, name: true, planType: true } },
-          encounter: { select: { id: true, encounterDate: true } },
+          provider: { select: { npi: true, firstName: true, lastName: true, credentials: true } },
         },
-        orderBy: { createdAt: 'desc' },
+        orderBy: { encounterDate: 'desc' },
         take: limit + 1,
         cursor: cursor ? { id: cursor } : undefined,
       })
 
       let nextCursor: string | undefined
-      if (claims.length > limit) {
-        const next = claims.pop()
+      if (encounters.length > limit) {
+        const next = encounters.pop()
         nextCursor = next?.id
       }
 
-      return {
-        claims: claims.map(c => ({
-          ...c,
-          totalCharge: c.totalCharge.toNumber(),
-          allowedAmount: c.allowedAmount?.toNumber() ?? null,
-          paidAmount: c.paidAmount?.toNumber() ?? null,
-          patientBalance: c.patientBalance?.toNumber() ?? null,
-        })),
-        nextCursor,
-      }
+      const claims = encounters.map(e => ({
+        id: e.id,
+        claimNumber: 'ENC-' + e.id.slice(0, 8).toUpperCase(),
+        serviceDate: e.encounterDate,
+        totalCharge: e.paidAmount?.toNumber() ?? 0,
+        allowedAmount: null,
+        paidAmount: e.claimStatus === 'paid' ? (e.paidAmount?.toNumber() ?? null) : null,
+        patientBalance: null,
+        status: mapClaimStatus(e.claimStatus ?? null),
+        denialReason: null,
+        createdAt: e.createdAt,
+        patient: e.patient,
+        payer: { id: 'TX-MEDICAID', name: 'Texas Medicaid', planType: 'MEDICAID' },
+        encounter: { id: e.id, encounterDate: e.encounterDate },
+      }))
+
+      return { claims, nextCursor }
     }),
 
   getById: protectedProcedure
     .input(z.object({ id: z.string() }))
     .query(async ({ ctx, input }) => {
-      const claim = await ctx.prisma.claim.findUnique({
+      const enc = await ctx.prisma.medicaidEncounter.findUnique({
         where: { id: input.id },
         include: {
           patient: true,
-          payer: true,
-          encounter: { include: { diagnoses: true, procedures: true } },
-          events: { orderBy: { createdAt: 'desc' } },
+          provider: true,
         },
       })
-      if (!claim) throw new TRPCError({ code: 'NOT_FOUND' })
+      if (!enc) throw new TRPCError({ code: 'NOT_FOUND' })
+
       return {
-        ...claim,
-        totalCharge: claim.totalCharge.toNumber(),
-        allowedAmount: claim.allowedAmount?.toNumber() ?? null,
-        paidAmount: claim.paidAmount?.toNumber() ?? null,
-        patientBalance: claim.patientBalance?.toNumber() ?? null,
+        id: enc.id,
+        claimNumber: 'ENC-' + enc.id.slice(0, 8).toUpperCase(),
+        serviceDate: enc.encounterDate,
+        totalCharge: enc.paidAmount?.toNumber() ?? 0,
+        allowedAmount: null,
+        paidAmount: enc.claimStatus === 'paid' ? (enc.paidAmount?.toNumber() ?? null) : null,
+        patientBalance: null,
+        status: mapClaimStatus(enc.claimStatus ?? null),
+        denialReason: null,
+        createdAt: enc.createdAt,
+        patient: enc.patient,
+        payer: { id: 'TX-MEDICAID', name: 'Texas Medicaid', planType: 'MEDICAID' },
+        encounter: {
+          id: enc.id,
+          encounterDate: enc.encounterDate,
+          diagnoses: enc.diagnosisCodes.map((c, i) => ({
+            id: enc.id + '||' + c, icdCode: c, description: '', isPrimary: i === 0,
+          })),
+          procedures: [{ id: enc.procCode, cptCode: enc.procCode, description: '' }],
+        },
+        events: [],
       }
     }),
 
@@ -83,32 +118,20 @@ export const claimsRouter = router({
       notes: z.string().optional(),
     }))
     .mutation(async ({ ctx, input }) => {
-      type ClaimStatusType = 'PENDING' | 'SCRUBBING' | 'SUBMITTED' | 'ACCEPTED' | 'PAID' | 'DENIED' | 'APPEALED' | 'VOIDED'
-      const newStatus = input.status as ClaimStatusType
-      const [updatedClaim] = await ctx.prisma.$transaction([
-        ctx.prisma.claim.update({
-          where: { id: input.id },
-          data: {
-            status: newStatus,
-            ...(newStatus === 'SUBMITTED' ? { submittedAt: new Date() } : {}),
-            ...(['PAID', 'DENIED'].includes(newStatus) ? { adjudicatedAt: new Date() } : {}),
-          },
-        }),
-        ctx.prisma.claimEvent.create({
-          data: {
-            claimId: input.id,
-            status: newStatus,
-            notes: input.notes,
-            automated: false,
-          },
-        }),
-      ])
+      const newClaimStatus = UI_TO_CLAIM[input.status] ?? input.status
+      const enc = await ctx.prisma.medicaidEncounter.update({
+        where: { id: input.id },
+        data: { claimStatus: newClaimStatus },
+      })
       return {
-        ...updatedClaim,
-        totalCharge: updatedClaim.totalCharge.toNumber(),
-        allowedAmount: updatedClaim.allowedAmount?.toNumber() ?? null,
-        paidAmount: updatedClaim.paidAmount?.toNumber() ?? null,
-        patientBalance: updatedClaim.patientBalance?.toNumber() ?? null,
+        id: enc.id,
+        claimNumber: 'ENC-' + enc.id.slice(0, 8).toUpperCase(),
+        serviceDate: enc.encounterDate,
+        totalCharge: enc.paidAmount?.toNumber() ?? 0,
+        allowedAmount: null,
+        paidAmount: enc.claimStatus === 'paid' ? (enc.paidAmount?.toNumber() ?? null) : null,
+        patientBalance: null,
+        status: mapClaimStatus(enc.claimStatus ?? null),
       }
     }),
 })

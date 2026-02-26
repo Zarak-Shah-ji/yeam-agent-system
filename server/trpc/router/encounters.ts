@@ -2,6 +2,10 @@ import { z } from 'zod'
 import { TRPCError } from '@trpc/server'
 import { protectedProcedure, router } from '../trpc'
 
+const mapProvider = (p: { npi: string; firstName: string | null; lastName: string | null; credentials: string | null }) => ({
+  id: p.npi, firstName: p.firstName ?? '', lastName: p.lastName ?? '', credential: p.credentials ?? '',
+})
+
 export const encountersRouter = router({
   list: protectedProcedure
     .input(z.object({
@@ -11,18 +15,15 @@ export const encountersRouter = router({
       cursor: z.string().optional(),
     }).optional())
     .query(async ({ ctx, input }) => {
-      const { patientId, status, limit = 30, cursor } = input ?? {}
+      const { patientId, limit = 30, cursor } = input ?? {}
 
-      const encounters = await ctx.prisma.encounter.findMany({
+      const encounters = await ctx.prisma.medicaidEncounter.findMany({
         where: {
           ...(patientId ? { patientId } : {}),
-          ...(status ? { status: status as 'DRAFT' | 'SIGNED' | 'AMENDED' | 'VOIDED' } : {}),
         },
         include: {
           patient: { select: { id: true, firstName: true, lastName: true, mrn: true } },
-          provider: { select: { id: true, firstName: true, lastName: true, credential: true } },
-          diagnoses: { where: { isPrimary: true }, take: 1 },
-          procedures: { take: 1 },
+          provider: { select: { npi: true, firstName: true, lastName: true, credentials: true } },
         },
         orderBy: { encounterDate: 'desc' },
         take: limit + 1,
@@ -35,41 +36,86 @@ export const encountersRouter = router({
         nextCursor = next?.id
       }
 
-      return { encounters, nextCursor }
+      const mapped = encounters.map(e => ({
+        id: e.id,
+        patientId: e.patientId,
+        encounterDate: e.encounterDate,
+        status: 'SIGNED' as const,
+        createdAt: e.createdAt,
+        updatedAt: e.updatedAt,
+        patient: e.patient,
+        provider: mapProvider(e.provider),
+        diagnoses: [{ id: e.diagnosisCodes[0] ?? 'Z00.00', icdCode: e.diagnosisCodes[0] ?? 'Z00.00', description: '', isPrimary: true }],
+        procedures: [{ id: e.procCode, cptCode: e.procCode }],
+      }))
+
+      return { encounters: mapped, nextCursor }
     }),
 
   getById: protectedProcedure
     .input(z.object({ id: z.string() }))
     .query(async ({ ctx, input }) => {
-      const enc = await ctx.prisma.encounter.findUnique({
+      const enc = await ctx.prisma.medicaidEncounter.findUnique({
         where: { id: input.id },
         include: {
-          patient: {
-            include: {
-              coverages: {
-                include: { payer: true },
-                where: { active: true },
-                take: 1,
-              },
-            },
-          },
+          patient: true,
           provider: true,
-          diagnoses: { orderBy: { sequence: 'asc' } },
-          procedures: true,
-          appointment: true,
-          claims: { include: { payer: true } },
         },
       })
       if (!enc) throw new TRPCError({ code: 'NOT_FOUND' })
+
+      const coverages = [{
+        id: enc.patient.id + '-cov',
+        memberId: enc.patient.insuranceId ?? '',
+        groupNumber: null as string | null,
+        copay: null as number | null,
+        deductible: null as number | null,
+        deductibleMet: null as number | null,
+        active: true,
+        isPrimary: true,
+        payer: { name: enc.patient.insuranceType ?? 'Medicaid', planType: 'MEDICAID' },
+      }]
+
       return {
-        ...enc,
-        claims: enc.claims.map(c => ({
-          ...c,
-          totalCharge: c.totalCharge.toNumber(),
-          allowedAmount: c.allowedAmount?.toNumber() ?? null,
-          paidAmount: c.paidAmount?.toNumber() ?? null,
-          patientBalance: c.patientBalance?.toNumber() ?? null,
+        id: enc.id,
+        patientId: enc.patientId,
+        encounterDate: enc.encounterDate,
+        status: 'SIGNED' as 'DRAFT' | 'SIGNED' | 'AMENDED' | 'VOIDED',
+        subjective: null as string | null,
+        objective: null as string | null,
+        assessment: null as string | null,
+        plan: enc.notes,
+        notes: enc.notes,
+        createdAt: enc.createdAt,
+        updatedAt: enc.updatedAt,
+        signedAt: enc.encounterDate as Date | null,
+        signedBy: enc.providerNpi as string | null,
+        patient: {
+          ...enc.patient,
+          address: enc.patient.addrLine1,
+          ssnLast4: null as string | null,
+          preferredLanguage: null as string | null,
+          coverages,
+        },
+        provider: mapProvider(enc.provider),
+        diagnoses: enc.diagnosisCodes.map((c, i) => ({
+          id: enc.id + '||' + c,
+          icdCode: c,
+          description: '',
+          isPrimary: i === 0,
+          sequence: i + 1,
+          encounterId: enc.id,
         })),
+        procedures: [{
+          id: enc.procCode,
+          cptCode: enc.procCode,
+          description: '',
+          units: 1,
+          fee: enc.paidAmount?.toNumber() ?? null,
+          encounterId: enc.id,
+        }],
+        claims: [],
+        appointment: null as null | { chiefComplaint: string | null },
       }
     }),
 
@@ -82,31 +128,20 @@ export const encountersRouter = router({
       plan: z.string().optional(),
     }))
     .mutation(async ({ ctx, input }) => {
-      const enc = await ctx.prisma.encounter.findUnique({ where: { id: input.id } })
+      const enc = await ctx.prisma.medicaidEncounter.findUnique({ where: { id: input.id } })
       if (!enc) throw new TRPCError({ code: 'NOT_FOUND' })
-      if (enc.status !== 'DRAFT') {
-        throw new TRPCError({ code: 'FORBIDDEN', message: 'Only DRAFT encounters can be edited' })
-      }
-      const { id, ...data } = input
-      return ctx.prisma.encounter.update({ where: { id }, data })
+      return ctx.prisma.medicaidEncounter.update({
+        where: { id: input.id },
+        data: { notes: input.plan ?? enc.notes },
+      })
     }),
 
   sign: protectedProcedure
     .input(z.object({ id: z.string() }))
     .mutation(async ({ ctx, input }) => {
-      const enc = await ctx.prisma.encounter.findUnique({ where: { id: input.id } })
+      const enc = await ctx.prisma.medicaidEncounter.findUnique({ where: { id: input.id } })
       if (!enc) throw new TRPCError({ code: 'NOT_FOUND' })
-      if (enc.status !== 'DRAFT') {
-        throw new TRPCError({ code: 'FORBIDDEN', message: 'Only DRAFT encounters can be signed' })
-      }
-      return ctx.prisma.encounter.update({
-        where: { id: input.id },
-        data: {
-          status: 'SIGNED',
-          signedAt: new Date(),
-          signedBy: ctx.session?.user?.id,
-        },
-      })
+      return enc
     }),
 
   addDiagnosis: protectedProcedure
@@ -118,12 +153,22 @@ export const encountersRouter = router({
       sequence: z.number().default(1),
     }))
     .mutation(async ({ ctx, input }) => {
-      return ctx.prisma.diagnosis.create({ data: input })
+      return ctx.prisma.medicaidEncounter.update({
+        where: { id: input.encounterId },
+        data: { diagnosisCodes: { push: input.icdCode } },
+      })
     }),
 
   removeDiagnosis: protectedProcedure
     .input(z.object({ id: z.string() }))
     .mutation(async ({ ctx, input }) => {
-      return ctx.prisma.diagnosis.delete({ where: { id: input.id } })
+      const [encounterId, icdCode] = input.id.split('||')
+      const enc = await ctx.prisma.medicaidEncounter.findUnique({ where: { id: encounterId } })
+      if (!enc) throw new TRPCError({ code: 'NOT_FOUND' })
+      const newCodes = enc.diagnosisCodes.filter(c => c !== icdCode)
+      return ctx.prisma.medicaidEncounter.update({
+        where: { id: encounterId },
+        data: { diagnosisCodes: newCodes },
+      })
     }),
 })
