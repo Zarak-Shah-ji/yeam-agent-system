@@ -48,7 +48,6 @@ export default function LoginPage() {
             <Stethoscope className="h-6 w-6 text-white" />
           </div>
           <h1 className="text-xl font-bold text-gray-900">Yeam.ai EHR</h1>
-          <p className="text-sm text-gray-500">Molina Family Health Clinic</p>
         </div>
 
         {/* Form */}
