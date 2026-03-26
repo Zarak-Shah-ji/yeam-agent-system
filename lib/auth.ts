@@ -35,23 +35,28 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   providers: [
     Credentials({
       async authorize(credentials) {
-        const parsed = loginSchema.safeParse(credentials)
-        if (!parsed.success) return null
+        try {
+          const parsed = loginSchema.safeParse(credentials)
+          if (!parsed.success) return null
 
-        const user = await prisma.user.findUnique({
-          where: { email: parsed.data.email },
-        })
+          const user = await prisma.user.findUnique({
+            where: { email: parsed.data.email },
+          })
 
-        if (!user?.passwordHash) return null
+          if (!user?.passwordHash) return null
 
-        const valid = await bcrypt.compare(parsed.data.password, user.passwordHash)
-        if (!valid) return null
+          const valid = await bcrypt.compare(parsed.data.password, user.passwordHash)
+          if (!valid) return null
 
-        return {
-          id: user.id,
-          email: user.email,
-          name: user.name,
-          role: user.role,
+          return {
+            id: user.id,
+            email: user.email,
+            name: user.name,
+            role: user.role,
+          }
+        } catch (e) {
+          console.error('[auth] authorize error:', e)
+          throw new Error(`DB_ERROR: ${e instanceof Error ? e.message : String(e)}`)
         }
       },
     }),
