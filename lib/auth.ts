@@ -53,9 +53,8 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
             name: user.name,
             role: user.role,
           }
-        } catch (e) {
-          console.error('[auth] authorize error:', e)
-          throw new Error(`DB_ERROR: ${e instanceof Error ? e.message : String(e)}`)
+        } catch {
+          return null
         }
       },
     }),
