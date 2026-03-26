@@ -23,3 +23,6 @@ build/
 # Misc
 .DS_Store
 *.tsbuildinfo
+
+# Large data files
+*.csv
