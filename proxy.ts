@@ -6,8 +6,8 @@ export default auth((req) => {
   const isLoggedIn = !!req.auth
   const { pathname } = req.nextUrl
 
-  // Allow auth routes through
-  if (pathname.startsWith('/login') || pathname.startsWith('/api/auth')) {
+  // Allow auth routes and debug through
+  if (pathname.startsWith('/login') || pathname.startsWith('/api/auth') || pathname === '/api/healthz') {
     return NextResponse.next()
   }
 
