@@ -1,0 +1,8 @@
+# Large data files — not needed for deployment
+*.csv
+state_TX.csv
+
+# Local dev
+node_modules/
+.pnpm-store/
+.next/

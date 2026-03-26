@@ -26,3 +26,4 @@ build/
 
 # Large data files
 *.csv
+.vercel
