@@ -12,16 +12,16 @@ const d = (daysOffset: number, hour = 9, minute = 0) => {
 }
 
 async function main() {
-  console.log('🌱 Seeding Molina Family Health Clinic demo data...')
+  console.log('🌱 Seeding Yeam Health Clinic demo data...')
 
   // ─── Users ───────────────────────────────────────────────────────────────
   const passwordHash = await bcrypt.hash('demo1234', 12)
 
   const adminUser = await prisma.user.upsert({
-    where: { email: 'admin@molinaclinic.demo' },
+    where: { email: 'admin@yeam.demo' },
     update: {},
     create: {
-      email: 'admin@molinaclinic.demo',
+      email: 'admin@yeam.demo',
       name: 'Admin User',
       passwordHash,
       role: 'ADMIN',
@@ -29,10 +29,10 @@ async function main() {
   })
 
   const providerUser = await prisma.user.upsert({
-    where: { email: 'provider@molinaclinic.demo' },
+    where: { email: 'provider@yeam.demo' },
     update: {},
     create: {
-      email: 'provider@molinaclinic.demo',
+      email: 'provider@yeam.demo',
       name: 'Dr. Sarah Chen',
       passwordHash,
       role: 'PROVIDER',
@@ -40,10 +40,10 @@ async function main() {
   })
 
   await prisma.user.upsert({
-    where: { email: 'frontdesk@molinaclinic.demo' },
+    where: { email: 'frontdesk@yeam.demo' },
     update: {},
     create: {
-      email: 'frontdesk@molinaclinic.demo',
+      email: 'frontdesk@yeam.demo',
       name: 'Maria Lopez',
       passwordHash,
       role: 'FRONT_DESK',
@@ -51,10 +51,10 @@ async function main() {
   })
 
   await prisma.user.upsert({
-    where: { email: 'billing@molinaclinic.demo' },
+    where: { email: 'billing@yeam.demo' },
     update: {},
     create: {
-      email: 'billing@molinaclinic.demo',
+      email: 'billing@yeam.demo',
       name: 'James Okafor',
       passwordHash,
       role: 'BILLING',
@@ -73,7 +73,7 @@ async function main() {
       lastName: 'Chen',
       credential: 'MD',
       specialty: 'Family Medicine',
-      email: 'provider@molinaclinic.demo',
+      email: 'provider@yeam.demo',
       phone: '(555) 201-0001',
     },
   })
@@ -87,7 +87,7 @@ async function main() {
       lastName: 'Patel',
       credential: 'MD',
       specialty: 'Pediatrics',
-      email: 'rpatel@molinaclinic.demo',
+      email: 'rpatel@yeam.demo',
       phone: '(555) 201-0002',
     },
   })
@@ -101,7 +101,7 @@ async function main() {
       lastName: 'Williams',
       credential: 'NP',
       specialty: 'Family Medicine',
-      email: 'twilliams@molinaclinic.demo',
+      email: 'twilliams@yeam.demo',
       phone: '(555) 201-0003',
     },
   })
@@ -440,10 +440,10 @@ async function main() {
 
   console.log('✓ Agent logs created')
   console.log('\n✅ Seed complete! Demo credentials:')
-  console.log('   admin@molinaclinic.demo / demo1234')
-  console.log('   provider@molinaclinic.demo / demo1234')
-  console.log('   frontdesk@molinaclinic.demo / demo1234')
-  console.log('   billing@molinaclinic.demo / demo1234')
+  console.log('   admin@yeam.demo / demo1234')
+  console.log('   provider@yeam.demo / demo1234')
+  console.log('   frontdesk@yeam.demo / demo1234')
+  console.log('   billing@yeam.demo / demo1234')
 }
 
 main()

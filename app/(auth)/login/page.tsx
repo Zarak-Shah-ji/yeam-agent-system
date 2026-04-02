@@ -61,7 +61,7 @@ export default function LoginPage() {
               type="email"
               value={email}
               onChange={e => setEmail(e.target.value)}
-              placeholder="you@molinaclinic.demo"
+              placeholder="you@yeam.demo"
               required
               autoComplete="email"
             />
@@ -97,10 +97,10 @@ export default function LoginPage() {
         {/* Demo credentials */}
         <div className="rounded-lg bg-gray-50 border border-gray-200 p-3 text-xs text-gray-500 space-y-1">
           <p className="font-medium text-gray-600">Demo accounts (password: demo1234)</p>
-          <p>admin@molinaclinic.demo</p>
-          <p>provider@molinaclinic.demo</p>
-          <p>frontdesk@molinaclinic.demo</p>
-          <p>billing@molinaclinic.demo</p>
+          <p>admin@yeam.demo</p>
+          <p>provider@yeam.demo</p>
+          <p>frontdesk@yeam.demo</p>
+          <p>billing@yeam.demo</p>
         </div>
       </div>
     </div>

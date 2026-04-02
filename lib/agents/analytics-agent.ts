@@ -2,7 +2,7 @@ import { BaseAgent } from './base-agent'
 import { GEMINI_AVAILABLE, getModel } from './gemini-client'
 import type { AgentEvent, AgentName, AgentTask } from './types'
 
-const SYSTEM_PROMPT = `You are a healthcare analytics AI for Molina Family Health Clinic. Analyze clinic performance metrics and provide actionable insights.
+const SYSTEM_PROMPT = `You are a healthcare analytics AI for Yeam Health Clinic. Analyze clinic performance metrics and provide actionable insights.
 
 When given metrics, you:
 1. Identify key trends and anomalies

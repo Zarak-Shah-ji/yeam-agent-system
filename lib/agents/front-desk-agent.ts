@@ -2,7 +2,7 @@ import { BaseAgent } from './base-agent'
 import { GEMINI_AVAILABLE, getModel } from './gemini-client'
 import type { AgentEvent, AgentName, AgentTask } from './types'
 
-const SYSTEM_PROMPT = `You are an AI front desk assistant for Molina Family Health Clinic. You help staff with:
+const SYSTEM_PROMPT = `You are an AI front desk assistant for Yeam Health Clinic. You help staff with:
 - Patient check-ins and registration
 - Appointment scheduling and lookups
 - Insurance verification

@@ -2,7 +2,7 @@ import { BaseAgent } from './base-agent'
 import { GEMINI_AVAILABLE, getModel } from './gemini-client'
 import type { AgentEvent, AgentName, AgentTask } from './types'
 
-const SYSTEM_PROMPT = `You are a medical billing specialist AI for Molina Family Health Clinic. You help with:
+const SYSTEM_PROMPT = `You are a medical billing specialist AI for Yeam Health Clinic. You help with:
 - Drafting insurance appeal letters for denied claims
 - Explaining denial reasons and remediation steps
 - ERA/remittance advice interpretation
@@ -34,7 +34,7 @@ export class BillingAgent extends BaseAgent {
         taskId: task.id, agentName: this.name, status: 'complete',
         message: `Appeal drafted for ${claimNum}. Denial: ${reason}. Action: Obtain supporting documentation and resubmit within 180 days.`,
         data: {
-          appealLetter: `Dear Claims Review Department,\n\nRe: Appeal for Claim ${claimNum}\n\nWe are writing to appeal the denial of the above-referenced claim for services rendered. The denial reason provided was: "${reason}."\n\nThe services billed were medically necessary and clinically appropriate for the patient's documented condition. We respectfully request reconsideration and attach supporting clinical documentation.\n\nPlease contact our billing department at billing@molinaclinic.demo with any questions.\n\nSincerely,\nMolina Family Health Clinic — Billing Department`,
+          appealLetter: `Dear Claims Review Department,\n\nRe: Appeal for Claim ${claimNum}\n\nWe are writing to appeal the denial of the above-referenced claim for services rendered. The denial reason provided was: "${reason}."\n\nThe services billed were medically necessary and clinically appropriate for the patient's documented condition. We respectfully request reconsideration and attach supporting clinical documentation.\n\nPlease contact our billing department at billing@yeam.demo with any questions.\n\nSincerely,\nYeam Health Clinic — Billing Department`,
           recommendedAction: 'Attach medical records and resubmit within 180 days of denial date',
         },
         confidence: 0.80, reasoning: 'Stub (no GEMINI_API_KEY)', timestamp: new Date(),
