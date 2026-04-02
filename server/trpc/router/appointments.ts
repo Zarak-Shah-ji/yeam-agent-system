@@ -137,6 +137,15 @@ export const appointmentsRouter = router({
       })
     }),
 
+  delete: protectedProcedure
+    .input(z.object({ id: z.string() }))
+    .mutation(async ({ ctx, input }) => {
+      const enc = await ctx.prisma.medicaidEncounter.findUnique({ where: { id: input.id } })
+      if (!enc) throw new TRPCError({ code: 'NOT_FOUND' })
+      await ctx.prisma.medicaidEncounter.delete({ where: { id: input.id } })
+      return { success: true }
+    }),
+
   cancel: protectedProcedure
     .input(z.object({
       id: z.string(),

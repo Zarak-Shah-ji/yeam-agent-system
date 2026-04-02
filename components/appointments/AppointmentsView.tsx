@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import { format, differenceInYears } from 'date-fns'
-import { Calendar, UserCheck, Loader2, X } from 'lucide-react'
+import { Calendar, UserCheck, Loader2, X, Trash2 } from 'lucide-react'
 import { trpc } from '@/lib/trpc/client'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -39,6 +39,10 @@ export function AppointmentsView() {
   })
 
   const checkInMutation = trpc.appointments.checkIn.useMutation({
+    onSuccess: () => utils.appointments.list.invalidate(),
+  })
+
+  const deleteMutation = trpc.appointments.delete.useMutation({
     onSuccess: () => utils.appointments.list.invalidate(),
   })
 
@@ -156,6 +160,19 @@ export function AppointmentsView() {
                                 </Button>
                               </>
                             )}
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="text-red-400 hover:text-red-600 hover:bg-red-50"
+                              disabled={deleteMutation.isPending && deleteMutation.variables?.id === appt.id}
+                              onClick={() => {
+                                if (confirm(`Remove appointment for ${appt.patient.firstName} ${appt.patient.lastName}?`)) {
+                                  deleteMutation.mutate({ id: appt.id })
+                                }
+                              }}
+                            >
+                              <Trash2 className="h-3 w-3" />
+                            </Button>
                           </div>
                         </TableCell>
                       </TableRow>

@@ -3,7 +3,7 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { format } from 'date-fns'
-import { FileText } from 'lucide-react'
+import { FileText, Trash2 } from 'lucide-react'
 import { trpc } from '@/lib/trpc/client'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent } from '@/components/ui/card'
@@ -19,6 +19,11 @@ const STATUS_VARIANTS: Record<string, 'default' | 'success' | 'warning' | 'secon
 export function EncounterList() {
   const router = useRouter()
   const [statusFilter, setStatusFilter] = useState('ALL')
+
+  const utils = trpc.useUtils()
+  const deleteMutation = trpc.encounters.delete.useMutation({
+    onSuccess: () => utils.encounters.list.invalidate(),
+  })
 
   const { data, isLoading } = trpc.encounters.list.useQuery({
     status: statusFilter !== 'ALL' ? statusFilter : undefined,
@@ -98,9 +103,24 @@ export function EncounterList() {
                           <Badge variant={STATUS_VARIANTS[enc.status] ?? 'secondary'}>{enc.status}</Badge>
                         </TableCell>
                         <TableCell>
-                          <Button size="sm" variant="outline" onClick={() => router.push(`/encounters/${enc.id}`)}>
-                            <FileText className="h-3 w-3 mr-1" />View
-                          </Button>
+                          <div className="flex items-center gap-2">
+                            <Button size="sm" variant="outline" onClick={() => router.push(`/encounters/${enc.id}`)}>
+                              <FileText className="h-3 w-3 mr-1" />View
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="text-red-500 hover:text-red-700 hover:bg-red-50"
+                              disabled={deleteMutation.isPending && deleteMutation.variables?.id === enc.id}
+                              onClick={() => {
+                                if (confirm(`Delete encounter for ${enc.patient.firstName} ${enc.patient.lastName}?`)) {
+                                  deleteMutation.mutate({ id: enc.id })
+                                }
+                              }}
+                            >
+                              <Trash2 className="h-3 w-3" />
+                            </Button>
+                          </div>
                         </TableCell>
                       </TableRow>
                     )
