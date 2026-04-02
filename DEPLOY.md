@@ -95,7 +95,7 @@ This creates all tables in Supabase. **Must be run before the app is usable.**
 
 ## Step 6 — Seed Demo Data (optional)
 
-To load the Molina Family Health Clinic demo dataset:
+To load the Yeam Health Clinic demo dataset:
 
 ```bash
 DATABASE_URL="postgresql://..." pnpm prisma db seed
@@ -109,8 +109,8 @@ This creates 4 users, 20 patients, 30 appointments, and sample claims.
 
 1. Visit `https://YOUR-PROJECT.vercel.app/login`
 2. Log in with a demo account:
-   - `admin@molinaclinic.demo` / `demo1234`
-   - `provider@molinaclinic.demo` / `demo1234`
+   - `admin@yeam.demo` / `demo1234`
+   - `provider@yeam.demo` / `demo1234`
 3. Confirm these pages load: `/patients`, `/appointments`, `/analytics`
 
 ---
