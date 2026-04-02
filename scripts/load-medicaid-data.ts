@@ -16,7 +16,8 @@ import { PrismaClient } from '@prisma/client'
 const prisma = new PrismaClient({ log: [] })
 
 const CSV_PATH = path.join(process.cwd(), 'state_TX.csv')
-const CLAIMS_BATCH = 5000
+const YEAR_FROM = '2022'  // filter to 2022-01 through 2024-12
+const MAX_BILLING_PROVIDERS_FOR_CLAIMS = 5000  // cap claims rows to top N providers (~170 MB)
 const MAX_PROVIDERS_FOR_PATIENTS = 500
 const PATIENTS_PER_PROVIDER_MIN = 5
 const PATIENTS_PER_PROVIDER_MAX = 20
@@ -119,24 +120,30 @@ async function main() {
   console.log('🚀 Starting Medicaid data load...')
   console.log(`📂 CSV: ${CSV_PATH}`)
 
+  console.log('🗑️  Clearing existing Medicaid data...')
+  await prisma.$executeRaw`TRUNCATE TABLE medicaid_encounters, medicaid_patients, medicaid_claims_agg, hcpcs_codes, medicaid_providers RESTART IDENTITY CASCADE`
+  console.log('✅ Cleared')
+
   // Maps built during streaming
   const providers = new Map<string, ProviderRow>()
   const hcpcsAgg = new Map<string, HcpcsAgg>()
   // track claim count per billing NPI for selecting top providers
   const billingClaimCount = new Map<string, number>()
 
-  let claimsBatch: Array<{
+  interface YearAggRow {
     billingNpi: string
     servicingNpi: string | null
     procCode: string
-    yearMonth: string
+    yearMonth: string  // stores the year, e.g. "2022"
     numBeneficiaries: number | null
     numClaims: number | null
     paidAmount: number | null
     aoFirstName: string | null
     aoMiddleName: string | null
     aoLastName: string | null
-  }> = []
+  }
+
+  const yearAgg = new Map<string, YearAggRow>()
 
   let totalRows = 0
   let totalClaimsInserted = 0
@@ -158,6 +165,8 @@ async function main() {
     })
 
   await streamPass(record => {
+    const yearMonth = record.month?.trim() ?? ''
+    if (!yearMonth || yearMonth < YEAR_FROM) return
     totalRows++
     const billingNpi: string = record.billing_npi?.trim() ?? ''
     const servicingNpi: string = record.servicing_npi?.trim() ?? ''
@@ -214,6 +223,15 @@ async function main() {
   console.log(`   Unique providers: ${providers.size.toLocaleString()}`)
   console.log(`   Unique HCPCS codes: ${hcpcsAgg.size.toLocaleString()}`)
 
+  // Build top-N billing NPIs set to cap claims storage
+  const topBillingNpisForClaims = new Set(
+    Array.from(billingClaimCount.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, MAX_BILLING_PROVIDERS_FOR_CLAIMS)
+      .map(([npi]) => npi)
+  )
+  console.log(`   Capping claims to top ${topBillingNpisForClaims.size.toLocaleString()} billing providers`)
+
   // ── Phase 2b: Bulk-insert providers ──
 
   console.log('\n👩‍⚕️ Inserting providers...')
@@ -234,58 +252,48 @@ async function main() {
 
   const knownNpis = new Set(providers.keys())
 
-  const flushBatch = async () => {
-    if (claimsBatch.length === 0) return
-    const batch = claimsBatch.splice(0)
-    await prisma.medicaidClaimsAgg.createMany({ data: batch, skipDuplicates: true })
-    totalClaimsInserted += batch.length
-    if (totalClaimsInserted % 100000 === 0) {
-      process.stdout.write(`\r  claims inserted: ${totalClaimsInserted.toLocaleString()}  `)
+  await streamPass(record => {
+    const yearMonth = record.month?.trim() ?? ''
+    if (!yearMonth || yearMonth < YEAR_FROM) return
+    const billingNpi: string = record.billing_npi?.trim() ?? ''
+    const servicingNpi: string = record.servicing_npi?.trim() ?? ''
+    if (!billingNpi || !knownNpis.has(billingNpi)) return
+    if (!topBillingNpisForClaims.has(billingNpi)) return
+
+    const procCode: string = record.proc_cd?.trim() ?? ''
+    const year = yearMonth.slice(0, 4)
+    const resolvedServicingNpi = (servicingNpi && knownNpis.has(servicingNpi)) ? servicingNpi : null
+    const key = `${billingNpi}|${resolvedServicingNpi ?? ''}|${procCode}|${year}`
+
+    const existing = yearAgg.get(key)
+    if (existing) {
+      existing.numBeneficiaries = (existing.numBeneficiaries ?? 0) + (parseInt(record.num_benes) || 0)
+      existing.numClaims = (existing.numClaims ?? 0) + (parseInt(record.num_claims) || 0)
+      existing.paidAmount = (existing.paidAmount ?? 0) + (parseFloat(record.pd_amt) || 0)
+    } else {
+      yearAgg.set(key, {
+        billingNpi,
+        servicingNpi: resolvedServicingNpi,
+        procCode,
+        yearMonth: year,
+        numBeneficiaries: parseInt(record.num_benes) || null,
+        numClaims: parseInt(record.num_claims) || null,
+        paidAmount: parseFloat(record.pd_amt) || null,
+        aoFirstName: record.aofname?.trim() || null,
+        aoMiddleName: record.aomname?.trim() || null,
+        aoLastName: record.aolname?.trim() || null,
+      })
     }
-  }
-
-  await new Promise<void>((resolve, reject) => {
-    const parser = parse({ columns: true, skip_empty_lines: true, trim: true, relax_column_count: true })
-    let pending = Promise.resolve()
-
-    parser.on('readable', () => {
-      parser.pause()
-      pending = pending.then(async () => {
-        let record
-        while ((record = parser.read()) !== null) {
-          const billingNpi: string = record.billing_npi?.trim() ?? ''
-          const servicingNpi: string = record.servicing_npi?.trim() ?? ''
-          if (!billingNpi || !knownNpis.has(billingNpi)) continue
-
-          const procCode: string = record.proc_cd?.trim() ?? ''
-          const paidAmt = parseFloat(record.pd_amt) || 0
-          const numClaims = parseInt(record.num_claims) || 0
-
-          claimsBatch.push({
-            billingNpi,
-            servicingNpi: (servicingNpi && knownNpis.has(servicingNpi)) ? servicingNpi : null,
-            procCode,
-            yearMonth: record.month?.trim() ?? '',
-            numBeneficiaries: parseInt(record.num_benes) || null,
-            numClaims: numClaims || null,
-            paidAmount: paidAmt || null,
-            aoFirstName: record.aofname?.trim() || null,
-            aoMiddleName: record.aomname?.trim() || null,
-            aoLastName: record.aolname?.trim() || null,
-          })
-
-          if (claimsBatch.length >= CLAIMS_BATCH) await flushBatch()
-        }
-        parser.resume()
-      }).catch(reject)
-    })
-
-    parser.on('end', () => {
-      pending.then(() => flushBatch()).then(resolve).catch(reject)
-    })
-    parser.on('error', reject)
-    fs.createReadStream(CSV_PATH).pipe(parser)
   })
+
+  console.log(`  Pass 2 aggregated ${yearAgg.size.toLocaleString()} year-level rows in memory`)
+
+  const aggList = Array.from(yearAgg.values())
+  for (let i = 0; i < aggList.length; i += 2000) {
+    await prisma.medicaidClaimsAgg.createMany({ data: aggList.slice(i, i + 2000), skipDuplicates: true })
+    totalClaimsInserted += Math.min(2000, aggList.length - i)
+    process.stdout.write(`\r  claims inserted: ${totalClaimsInserted.toLocaleString()}`)
+  }
 
   console.log(`\n✅ ${totalClaimsInserted.toLocaleString()} claims inserted`)
 
@@ -425,8 +433,8 @@ async function main() {
     topProcsByProvider.set(row.billingNpi, list)
   }
 
-  // Date range: 2018-01 to 2024-12
-  const START_DATE = new Date('2018-01-01')
+  // Date range: 2022-01 to 2024-12
+  const START_DATE = new Date('2022-01-01')
   const END_DATE = new Date('2024-12-31')
 
   const CLAIM_STATUSES = [
