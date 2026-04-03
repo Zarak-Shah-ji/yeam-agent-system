@@ -379,8 +379,10 @@ async function main() {
     if (!coverage) continue
     const status = claimStatuses[i]
 
-    const claim = await prisma.claim.create({
-      data: {
+    const claim = await prisma.claim.upsert({
+      where: { claimNumber: `CLM-2024-${String(i + 1).padStart(4, '0')}` },
+      update: {},
+      create: {
         claimNumber: `CLM-2024-${String(i + 1).padStart(4, '0')}`,
         patientId: enc.patientId,
         payerId: coverage.payerId,
@@ -409,6 +411,7 @@ async function main() {
       },
     })
   }
+
 
   console.log('✓ Claims created')
 
