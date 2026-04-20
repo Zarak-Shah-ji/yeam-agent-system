@@ -4,6 +4,12 @@ A full-stack Electronic Health Record (EHR) system for Yeam Health Clinic, built
 
 ---
 
+## Day in the Life
+
+![Day in the Life](./day-in-life.gif)
+
+---
+
 ## Project Map
 
 ```
