@@ -6,3 +6,8 @@ state_TX.csv
 node_modules/
 .pnpm-store/
 .next/
+
+# Never upload local secrets to Vercel
+.env
+.env.local
+.env.*.local
