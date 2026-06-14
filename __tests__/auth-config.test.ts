@@ -45,6 +45,20 @@ describe('Auth configuration — error=Configuration regression guard', () => {
     expect(authConfig).toMatch(/process\.env\.AUTH_SECRET/)
     expect(authConfig).not.toMatch(/NEXTAUTH_SECRET/)
   })
+
+  it('wires up the PrismaAdapter so OAuth users/accounts persist to the database', () => {
+    expect(authConfig).toMatch(/@auth\/prisma-adapter/)
+    expect(authConfig).toMatch(/adapter:\s*PrismaAdapter\(prisma\)/)
+  })
+
+  it('keeps JWT session strategy (required for the Credentials provider alongside the adapter)', () => {
+    expect(authConfig).toMatch(/strategy:\s*'jwt'/)
+  })
+
+  it('enables email account linking so OAuth works for existing credential users', () => {
+    const linkingCount = (authConfig.match(/allowDangerousEmailAccountLinking:\s*true/g) ?? []).length
+    expect(linkingCount).toBeGreaterThanOrEqual(2)
+  })
 })
 
 describe('.env.example — Vercel deployment requirements', () => {
