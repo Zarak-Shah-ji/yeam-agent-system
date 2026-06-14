@@ -4,7 +4,8 @@ import { useState } from 'react'
 import { signIn } from 'next-auth/react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
-import { Stethoscope, Loader2 } from 'lucide-react'
+import Image from 'next/image'
+import { Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { trpc } from '@/lib/trpc/client'
@@ -47,8 +48,8 @@ export default function SignupPage() {
       {/* Left panel — branding */}
       <div className="hidden md:flex md:w-1/2 flex-col items-center justify-center bg-blue-600 px-12 text-white">
         <div className="flex flex-col items-center gap-6 text-center">
-          <div className="flex h-20 w-20 items-center justify-center rounded-2xl bg-white/15 backdrop-blur-sm">
-            <Stethoscope className="h-10 w-10 text-white" />
+          <div className="flex h-24 w-24 items-center justify-center rounded-2xl bg-white/15 backdrop-blur-sm">
+            <Image src="/logo.png" alt="Yeam.ai EHR" width={72} height={72} priority className="h-16 w-16" />
           </div>
           <div className="space-y-2">
             <h1 className="text-4xl font-bold tracking-tight">Yeam.ai EHR</h1>
@@ -75,7 +76,7 @@ export default function SignupPage() {
           {/* Mobile logo */}
           <div className="flex flex-col items-center gap-2 md:hidden">
             <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-blue-600">
-              <Stethoscope className="h-6 w-6 text-white" />
+              <Image src="/logo.png" alt="Yeam.ai EHR" width={32} height={32} className="h-8 w-8" />
             </div>
             <h1 className="text-xl font-bold text-gray-900">Yeam.ai EHR</h1>
           </div>

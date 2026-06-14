@@ -6,8 +6,13 @@ export default auth((req) => {
   const isLoggedIn = !!req.auth
   const { pathname } = req.nextUrl
 
-  // Allow auth routes and debug through
-  if (pathname.startsWith('/login') || pathname.startsWith('/api/auth') || pathname === '/api/healthz') {
+  // Allow public auth pages and auth/debug API routes through
+  if (
+    pathname.startsWith('/login') ||
+    pathname.startsWith('/signup') ||
+    pathname.startsWith('/api/auth') ||
+    pathname === '/api/healthz'
+  ) {
     return NextResponse.next()
   }
 
@@ -27,5 +32,7 @@ export default auth((req) => {
 })
 
 export const config = {
-  matcher: ['/((?!_next/static|_next/image|favicon.ico|public).*)'],
+  // Run on all routes except Next internals and static files (anything with a
+  // file extension, e.g. /logo.png), so public assets are served directly.
+  matcher: ['/((?!_next/static|_next/image|favicon.ico|.*\\.[\\w]+$).*)'],
 }
