@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import { signIn } from 'next-auth/react'
 import { useRouter } from 'next/navigation'
+import Link from 'next/link'
 import { Stethoscope, Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -167,6 +168,13 @@ export default function LoginPage() {
               Sign in
             </Button>
           </form>
+
+          <p className="text-center text-sm text-gray-500">
+            Don&apos;t have an account?{' '}
+            <Link href="/signup" className="font-medium text-blue-600 hover:underline">
+              Sign up
+            </Link>
+          </p>
         </div>
       </div>
     </div>
