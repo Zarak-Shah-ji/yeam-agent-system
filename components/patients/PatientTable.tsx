@@ -40,6 +40,7 @@ export function PatientTable() {
         />
       </div>
 
+      <div className="overflow-x-auto">
       <Table>
         <TableHeader>
           <TableRow>
@@ -98,6 +99,7 @@ export function PatientTable() {
               })}
         </TableBody>
       </Table>
+      </div>
 
       {!isLoading && (!data?.patients || data.patients.length === 0) && (
         <div className="flex flex-col items-center py-12 text-center">

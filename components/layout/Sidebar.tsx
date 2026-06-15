@@ -13,6 +13,7 @@ import {
   Stethoscope,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { useSidebar } from './sidebar-context'
 
 const navItems = [
   { href: '/', label: 'Dashboard', icon: LayoutDashboard },
@@ -26,9 +27,20 @@ const navItems = [
 
 export function Sidebar() {
   const pathname = usePathname()
+  const { isOpen, close } = useSidebar()
 
   return (
-    <aside className="flex h-full w-56 flex-col border-r border-gray-200 bg-gray-50">
+    <aside
+      className={cn(
+        // Base styles
+        'flex h-full w-56 shrink-0 flex-col border-r border-gray-200 bg-gray-50',
+        // Mobile: fixed drawer sliding in from the left, above backdrop (z-50)
+        'fixed inset-y-0 left-0 z-50 transition-transform duration-200 ease-in-out',
+        isOpen ? 'translate-x-0' : '-translate-x-full',
+        // Desktop: static, always visible, no transform
+        'md:static md:translate-x-0 md:transition-none',
+      )}
+    >
       {/* Logo */}
       <div className="flex h-14 items-center gap-2 border-b border-gray-200 px-4">
         <Stethoscope className="h-5 w-5 text-blue-600" />
@@ -48,6 +60,7 @@ export function Sidebar() {
             <Link
               key={href}
               href={href}
+              onClick={close}
               className={cn(
                 'flex items-center gap-2.5 rounded-md px-3 py-2 text-sm font-medium transition-colors',
                 active
