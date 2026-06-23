@@ -8,9 +8,9 @@ import { Card, CardContent } from '@/components/ui/card'
 
 const SUGGESTIONS = [
   'What is our current denial rate?',
-  'Show me revenue trends for the last 30 days',
-  'How do our collection rates compare to the industry benchmark?',
-  'What\'s our AR balance right now?',
+  'What is our total collected revenue?',
+  'How does our denial rate compare to the industry benchmark?',
+  'How many patient encounters have we processed?',
   'Give me a performance report on claims',
   'Are there any anomalies in our denial data?',
 ]

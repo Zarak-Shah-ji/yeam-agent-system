@@ -79,7 +79,7 @@ export function PatientTable() {
                     </TableCell>
                     <TableCell className="text-sm capitalize">{p.gender === 'M' ? 'Male' : p.gender === 'F' ? 'Female' : p.gender}</TableCell>
                     <TableCell>
-                      <div className="text-sm">{p.phone ?? '—'}</div>
+                      <div className="text-sm">{p.phone ?? '-'}</div>
                       <div className="text-xs text-gray-400 truncate max-w-[160px]">{p.email ?? ''}</div>
                     </TableCell>
                     <TableCell>

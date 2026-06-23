@@ -397,33 +397,34 @@ export async function executeMedicaidFunction(
 
     // ── 7. get_patient_encounters ─────────────────────────────────────────────
     case 'get_patient_encounters': {
-      const patientId   = String(args.patient_id ?? '').trim()
+      const patientRef  = String(args.patient_id ?? '').trim()
       const status      = args.status       ? String(args.status).trim()       : undefined
       const claimStatus = args.claim_status ? String(args.claim_status).trim() : undefined
       const limit       = Math.min(Number(args.limit ?? 20), 100)
 
-      if (!patientId) return { error: 'patient_id is required' }
+      if (!patientRef) return { error: 'patient_id is required' }
 
-      const where: Prisma.MedicaidEncounterWhereInput = { patientId }
+      // Resolve by cuid id OR mrn — the model sometimes passes the human-readable
+      // MRN from search_medicaid_patients instead of the patient's id.
+      const patient = await prisma.medicaidPatient.findFirst({
+        where: { OR: [{ id: patientRef }, { mrn: patientRef }] },
+        select: { id: true, mrn: true, firstName: true, lastName: true },
+      })
+
+      if (!patient) return { error: `Patient ${patientRef} not found` }
+
+      const where: Prisma.MedicaidEncounterWhereInput = { patientId: patient.id }
       if (status)      where.status      = status
       if (claimStatus) where.claimStatus = claimStatus
 
-      const [patient, encounters] = await Promise.all([
-        prisma.medicaidPatient.findUnique({
-          where: { id: patientId },
-          select: { mrn: true, firstName: true, lastName: true },
-        }),
-        prisma.medicaidEncounter.findMany({
-          where,
-          include: {
-            provider: { select: { npi: true, orgName: true, firstName: true, lastName: true } },
-          },
-          orderBy: { encounterDate: 'desc' },
-          take: limit,
-        }),
-      ])
-
-      if (!patient) return { error: `Patient ${patientId} not found` }
+      const encounters = await prisma.medicaidEncounter.findMany({
+        where,
+        include: {
+          provider: { select: { npi: true, orgName: true, firstName: true, lastName: true } },
+        },
+        orderBy: { encounterDate: 'desc' },
+        take: limit,
+      })
 
       return {
         patient:    { mrn: patient.mrn, name: `${patient.firstName} ${patient.lastName}` },

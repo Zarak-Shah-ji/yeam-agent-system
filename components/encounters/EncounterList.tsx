@@ -97,7 +97,7 @@ export function EncounterList() {
                               <span className="text-xs font-mono bg-gray-100 px-1 py-0.5 rounded">{primaryDx.icdCode}</span>
                               <span className="text-xs text-gray-500 ml-1 truncate max-w-[160px] inline-block align-middle">{primaryDx.description}</span>
                             </div>
-                          ) : '—'}
+                          ) : '-'}
                         </TableCell>
                         <TableCell>
                           <Badge variant={STATUS_VARIANTS[enc.status] ?? 'secondary'}>{enc.status}</Badge>

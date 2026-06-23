@@ -103,7 +103,7 @@ export function ClaimsView() {
                         ${Number(claim.totalCharge).toFixed(2)}
                       </TableCell>
                       <TableCell className="text-right text-sm">
-                        {claim.paidAmount != null ? `$${Number(claim.paidAmount).toFixed(2)}` : '—'}
+                        {claim.paidAmount != null ? `$${Number(claim.paidAmount).toFixed(2)}` : '-'}
                       </TableCell>
                       <TableCell>
                         <Badge variant={STATUS_VARIANTS[claim.status] ?? 'secondary'}>
@@ -111,7 +111,7 @@ export function ClaimsView() {
                         </Badge>
                       </TableCell>
                       <TableCell className="text-xs text-gray-500 max-w-[160px] truncate">
-                        {claim.denialReason ?? '—'}
+                        {claim.denialReason ?? '-'}
                       </TableCell>
                     </TableRow>
                   ))

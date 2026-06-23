@@ -46,7 +46,7 @@ export function BillingView() {
             {Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-28 rounded-lg" />)}
           </div>
         ) : deniedClaims.length === 0 ? (
-          <p className="text-sm text-gray-500 text-center py-12">No denied claims — great work!</p>
+          <p className="text-sm text-gray-500 text-center py-12">No denied claims - great work!</p>
         ) : (
           <div className="space-y-3">
             {deniedClaims.map(claim => (

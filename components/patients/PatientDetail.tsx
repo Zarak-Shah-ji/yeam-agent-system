@@ -63,7 +63,7 @@ export function PatientDetail({ id }: { id: string }) {
             <Phone className="h-4 w-4 text-gray-400 shrink-0" />
             <div>
               <p className="text-xs text-gray-500">Phone</p>
-              <p className="text-sm font-medium">{patient.phone ?? '—'}</p>
+              <p className="text-sm font-medium">{patient.phone ?? '-'}</p>
             </div>
           </CardContent>
         </Card>
@@ -72,7 +72,7 @@ export function PatientDetail({ id }: { id: string }) {
             <Mail className="h-4 w-4 text-gray-400 shrink-0" />
             <div>
               <p className="text-xs text-gray-500">Email</p>
-              <p className="text-sm font-medium truncate max-w-[120px]">{patient.email ?? '—'}</p>
+              <p className="text-sm font-medium truncate max-w-[120px]">{patient.email ?? '-'}</p>
             </div>
           </CardContent>
         </Card>
@@ -81,7 +81,7 @@ export function PatientDetail({ id }: { id: string }) {
             <MapPin className="h-4 w-4 text-gray-400 shrink-0" />
             <div>
               <p className="text-xs text-gray-500">Location</p>
-              <p className="text-sm font-medium">{patient.city ?? '—'}{patient.state ? `, ${patient.state}` : ''}</p>
+              <p className="text-sm font-medium">{patient.city ?? '-'}{patient.state ? `, ${patient.state}` : ''}</p>
             </div>
           </CardContent>
         </Card>
@@ -119,11 +119,11 @@ export function PatientDetail({ id }: { id: string }) {
                   <dt className="text-gray-500">Gender</dt>
                   <dd>{patient.gender === 'M' ? 'Male' : patient.gender === 'F' ? 'Female' : patient.gender}</dd>
                   <dt className="text-gray-500">SSN (last 4)</dt>
-                  <dd>{patient.ssnLast4 ? `***-**-${patient.ssnLast4}` : '—'}</dd>
+                  <dd>{patient.ssnLast4 ? `***-**-${patient.ssnLast4}` : '-'}</dd>
                   <dt className="text-gray-500">Language</dt>
                   <dd className="capitalize">{patient.preferredLanguage ?? 'English'}</dd>
                   <dt className="text-gray-500">Address</dt>
-                  <dd className="col-span-1">{patient.address ? `${patient.address}, ${patient.city}, ${patient.state} ${patient.zip}` : '—'}</dd>
+                  <dd className="col-span-1">{patient.address ? `${patient.address}, ${patient.city}, ${patient.state} ${patient.zip}` : '-'}</dd>
                 </dl>
               </CardContent>
             </Card>
@@ -141,7 +141,7 @@ export function PatientDetail({ id }: { id: string }) {
                     <dt className="text-gray-500">Member ID</dt>
                     <dd>{primaryCoverage.memberId}</dd>
                     <dt className="text-gray-500">Group #</dt>
-                    <dd>{primaryCoverage.groupNumber ?? '—'}</dd>
+                    <dd>{primaryCoverage.groupNumber ?? '-'}</dd>
                     <dt className="text-gray-500">Copay</dt>
                     <dd>${primaryCoverage.copay?.toString() ?? '0'}</dd>
                     <dt className="text-gray-500">Deductible</dt>

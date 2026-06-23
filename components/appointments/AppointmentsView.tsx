@@ -128,10 +128,10 @@ export function AppointmentsView() {
                           {appt.provider.credential && <span className="text-gray-400">, {appt.provider.credential}</span>}
                         </TableCell>
                         <TableCell>
-                          <span className="text-sm capitalize">{appt.appointmentType?.replace('-', ' ') ?? '—'}</span>
+                          <span className="text-sm capitalize">{appt.appointmentType?.replace('-', ' ') ?? '-'}</span>
                         </TableCell>
                         <TableCell>
-                          <span className="text-sm text-gray-600 max-w-[180px] truncate block">{appt.chiefComplaint ?? '—'}</span>
+                          <span className="text-sm text-gray-600 max-w-[180px] truncate block">{appt.chiefComplaint ?? '-'}</span>
                         </TableCell>
                         <TableCell>
                           <Badge variant={status.variant}>{status.label}</Badge>
