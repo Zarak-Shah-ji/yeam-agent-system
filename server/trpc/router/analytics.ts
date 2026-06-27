@@ -94,13 +94,16 @@ export const analyticsRouter = router({
     }),
 
   getTopDiagnoses: protectedProcedure
-    .input(z.object({ limit: z.number().default(10) }).optional())
+    .input(z.object({ days: z.number().default(30), limit: z.number().default(10) }).optional())
     .query(async ({ ctx, input }) => {
+      const days = input?.days ?? 30
       const limit = input?.limit ?? 10
+      const since = await getLatestSince(ctx.prisma, days)
       const results = await ctx.prisma.$queryRaw<Array<{ icd_code: string; count: number }>>(
         Prisma.sql`
-          SELECT unnest(diagnosis_codes) AS icd_code, COUNT(*)::int AS count
+          SELECT unnest("diagnosisCodes") AS icd_code, COUNT(*)::int AS count
           FROM medicaid_encounters
+          WHERE "encounterDate" >= ${since}
           GROUP BY icd_code
           ORDER BY count DESC
           LIMIT ${limit}

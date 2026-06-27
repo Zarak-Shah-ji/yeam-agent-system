@@ -73,6 +73,8 @@ export function AnalyticsView() {
               <div className="space-y-2">
                 {Array.from({ length: 5 }).map((_, i) => <Skeleton key={i} className="h-5 w-full" />)}
               </div>
+            ) : (topDx ?? []).length === 0 ? (
+              <p className="py-6 text-center text-xs text-gray-500">No diagnosis data for this period.</p>
             ) : (
               <table className="w-full text-xs">
                 <thead>

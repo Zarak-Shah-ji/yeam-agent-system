@@ -22,6 +22,21 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     signIn: '/login',
   },
   callbacks: {
+    // Gate OAuth sign-ins to existing accounts only. Without this, an unknown
+    // Google/GitHub email would silently auto-provision (or bounce back with no
+    // feedback). For an unknown email we abort sign-in (no account is created)
+    // and redirect the user to signup with their email pre-filled.
+    async signIn({ user, account }) {
+      if (account?.type !== 'oauth') return true // credentials handled in authorize()
+
+      const email = user.email
+      if (!email) return true
+
+      const existing = await prisma.user.findUnique({ where: { email } })
+      if (existing) return true
+
+      return `/signup?email=${encodeURIComponent(email)}&reason=no-account`
+    },
     jwt({ token, user }) {
       if (user) {
         token.id = user.id
