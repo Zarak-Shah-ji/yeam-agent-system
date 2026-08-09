@@ -8,11 +8,11 @@ import Image from 'next/image'
 import { Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { GoogleButton } from '@/components/auth/GoogleButton'
 import { trpc } from '@/lib/trpc/client'
 
 function SignupForm() {
   const searchParams = useSearchParams()
-  const noAccount = searchParams.get('reason') === 'no-account'
 
   const [name, setName] = useState('')
   const [email, setEmail] = useState(searchParams.get('email') ?? '')
@@ -89,11 +89,18 @@ function SignupForm() {
             <p className="text-sm text-gray-500">Get started with Yeam.ai EHR</p>
           </div>
 
-          {noAccount && (
-            <p className="text-sm text-amber-700 bg-amber-50 border border-amber-100 rounded-md px-3 py-2">
-              No account found for that email. Create one below to continue.
-            </p>
-          )}
+          {/* OAuth */}
+          <GoogleButton label="Sign up with Google" />
+
+          {/* Divider */}
+          <div className="relative">
+            <div className="absolute inset-0 flex items-center">
+              <div className="w-full border-t border-gray-200" />
+            </div>
+            <div className="relative flex justify-center text-xs">
+              <span className="bg-white px-3 text-gray-400">or sign up with email</span>
+            </div>
+          </div>
 
           <form onSubmit={handleSubmit} className="space-y-4">
             <div className="space-y-1.5">
