@@ -15,6 +15,11 @@ const loginSchema = z.object({
 export const { handlers, auth, signIn, signOut } = NextAuth({
   adapter: PrismaAdapter(prisma),
   secret: process.env.AUTH_SECRET,
+  // Derive callback/redirect URLs from the incoming Host header. Without this,
+  // a request served on the custom domain (app.yeam.ai) would be redirected to
+  // whatever AUTH_URL points at, bouncing users onto the *.vercel.app alias
+  // partway through sign-in. AUTH_URL, when set, still wins.
+  trustHost: true,
   // JWT strategy is required: the Credentials provider cannot use database
   // sessions. OAuth users/accounts are still persisted via the adapter.
   session: { strategy: 'jwt' },

@@ -216,7 +216,7 @@ pnpm dev
 | `DATABASE_URL` | Yes | PostgreSQL connection string (pooled for Supabase) |
 | `DIRECT_URL` | Yes (Supabase) | Direct PostgreSQL connection string (non-pooled, for migrations) |
 | `AUTH_SECRET` | Yes | NextAuth secret — generate with `openssl rand -base64 32` |
-| `NEXTAUTH_URL` | Yes | App URL, e.g. `http://localhost:3000` |
+| `AUTH_URL` | Yes | App URL — `http://localhost:3000` in dev, `https://app.yeam.ai` in production |
 | `GEMINI_API_KEY` | No | Google AI Studio key — agents stub gracefully without it |
 
 ### Demo Credentials (password: `demo1234`)
@@ -250,7 +250,8 @@ See [`DEPLOY.md`](./DEPLOY.md) for the full step-by-step guide. Summary:
 
 1. Provision a free Supabase PostgreSQL database
 2. Push repo to GitHub
-3. Import into Vercel — set `DATABASE_URL`, `DIRECT_URL`, `AUTH_SECRET`, `NEXTAUTH_URL`, optionally `GEMINI_API_KEY`
+3. Import into Vercel — set `DATABASE_URL`, `DIRECT_URL`, `AUTH_SECRET`, `AUTH_URL`, optionally `GEMINI_API_KEY`
+4. Attach the custom domain `app.yeam.ai` — see [DEPLOY.md, Step 4b](DEPLOY.md) for the exact Namecheap DNS record
 4. Run `prisma migrate deploy` against the production DB
 5. Run `pnpm db:seed` to create demo accounts
 
