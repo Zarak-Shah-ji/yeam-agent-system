@@ -1,16 +1,43 @@
 import { BaseAgent } from './base-agent'
 import { GEMINI_AVAILABLE, getModel } from './gemini-client'
+import { buildAppealContext } from '@/lib/billing/appeal-context'
 import type { AgentEvent, AgentName, AgentTask } from './types'
 
-const SYSTEM_PROMPT = `You are a medical billing specialist AI for Yeam Health Clinic. You help with:
-- Drafting insurance appeal letters for denied claims
-- Explaining denial reasons and remediation steps
-- ERA/remittance advice interpretation
-- Payment posting guidance
+const SYSTEM_PROMPT = `You are a medical billing specialist who drafts formal insurance appeal letters for denied claims.
 
-For appeal letters include: claim reference, date of service, clinical justification, regulatory references (CMS LCD if applicable), and request for reconsideration. Be professional, concise, and clinically accurate.`
+You will be given the full claim context as JSON. Your ONLY job is to return a single, complete, ready-to-send appeal letter.
+
+Hard rules:
+- Output ONLY the letter itself. No preamble, no explanation, no commentary, no markdown code fences, no "I understand", no "Here is".
+- NEVER ask for more information and NEVER request clarification. You already have everything you need to write the letter.
+- If a field is missing or null (for example the denial reason or the payer's appeals address), DO NOT ask for it. Insert a clearly-marked bracketed placeholder such as [DENIAL REASON — SEE ATTACHED EOB/ERA] and write the appeal on general medical-necessity grounds.
+- Use only the data provided. Do not invent member IDs, addresses, NPIs, dates, or codes that are not present.
+
+The letter must include:
+- Today's date and the payer's name/address block (use a bracketed placeholder if the payer address is missing).
+- A "Re:" line with the claim number, patient name, member ID, and date of service.
+- A body that formally requests reconsideration, states the services were medically necessary and clinically appropriate, and references the procedure (CPT/HCPCS) and diagnosis (ICD-10) codes provided.
+- A professional closing and signature block for the rendering provider / Yeam Health Clinic billing department.
+
+Begin directly with the letter (e.g. the date or "Dear ...").`
 
 const KEYWORDS = ['appeal', 'denial', 'denied', 'payment', 'era', 'remittance', 'post payment', 'write off', 'void', 'resubmit', 'reconsider', 'appeal-denial', 'draft-appeal']
+
+const DENIAL_PLACEHOLDER = '[DENIAL REASON — SEE ATTACHED EOB/ERA]'
+
+/** Safety net: strip any conversational lead-in or code fences a model might add. */
+function stripPreamble(text: string): string {
+  let t = text.trim()
+  if (t.startsWith('```')) {
+    t = t.replace(/^```[a-zA-Z]*\n?/, '').replace(/\n?```$/, '').trim()
+  }
+  // Drop a single leading conversational sentence if the model added one.
+  t = t.replace(
+    /^(sure|certainly|of course|here(?:'s| is)|i understand|i'd be happy|i can|below is|please find)\b[^\n]*\n+/i,
+    '',
+  ).trim()
+  return t
+}
 
 export class BillingAgent extends BaseAgent {
   name: AgentName = 'billing'
@@ -21,40 +48,97 @@ export class BillingAgent extends BaseAgent {
   }
 
   protected async *_execute(task: AgentTask): AsyncGenerator<AgentEvent> {
-    yield { taskId: task.id, agentName: this.name, status: 'thinking', message: 'Reviewing billing information...', timestamp: new Date() }
+    yield { taskId: task.id, agentName: this.name, status: 'thinking', message: 'Gathering claim details...', timestamp: new Date() }
     await new Promise(r => setTimeout(r, 300))
 
+    // Fetch the full claim context server-side before drafting. The client
+    // passes claimId; everything else falls back to whatever it also sent.
+    const incoming = task.context as Record<string, unknown>
+    let ctx: Record<string, unknown> = incoming
+    const claimId = typeof incoming.claimId === 'string' ? incoming.claimId : null
+    if (claimId) {
+      try {
+        const appeal = await buildAppealContext(claimId)
+        if (appeal) ctx = { ...incoming, ...appeal }
+      } catch (err) {
+        console.error('buildAppealContext failed', err)
+      }
+    }
+
+    const claimNum = (ctx.claimNumber as string) || 'CLM-XXXX'
+
     if (!GEMINI_AVAILABLE) {
-      yield { taskId: task.id, agentName: this.name, status: 'working', message: 'Processing billing request...', timestamp: new Date() }
+      yield { taskId: task.id, agentName: this.name, status: 'working', message: 'Drafting appeal letter...', timestamp: new Date() }
       await new Promise(r => setTimeout(r, 400))
-      const ctx = task.context as Record<string, string>
-      const claimNum = ctx.claimNumber ?? 'CLM-XXXX'
-      const reason = ctx.denialReason ?? 'unspecified reason'
+
+      const patient = ctx.patient as { name?: string; memberId?: string } | undefined
+      const payer = ctx.payer as { name?: string } | undefined
+      const patientName = patient?.name || (ctx.patientName as string) || '[PATIENT NAME]'
+      const memberId = patient?.memberId || '[MEMBER ID]'
+      const payerName = payer?.name || (ctx.payer as string) || '[PAYER NAME]'
+      const serviceDate = (ctx.serviceDate as string) || '[DATE OF SERVICE]'
+      const reason = (ctx.denialReason as string) || DENIAL_PLACEHOLDER
+      const today = new Intl.DateTimeFormat('en-US', { month: 'long', day: 'numeric', year: 'numeric' }).format(new Date())
+
+      const appealLetter = `${today}
+
+${payerName}
+Claims Review Department
+[PAYER APPEALS ADDRESS]
+
+Re: Appeal of Denied Claim
+Claim Number: ${claimNum}
+Patient: ${patientName}
+Member ID: ${memberId}
+Date of Service: ${serviceDate}
+
+Dear Claims Review Department,
+
+We are formally requesting reconsideration of the above-referenced claim, which was denied. Denial reason: ${reason}.
+
+The services rendered on ${serviceDate} were medically necessary and clinically appropriate for the patient's documented condition. The procedure and diagnosis codes submitted accurately reflect the care provided, and supporting clinical documentation is attached for your review.
+
+We respectfully request that this claim be reprocessed and paid in accordance with the member's benefits. Please contact our billing department at billing@yeam.demo with any questions.
+
+Sincerely,
+
+Yeam Health Clinic — Billing Department`
+
       yield {
         taskId: task.id, agentName: this.name, status: 'complete',
-        message: `Appeal drafted for ${claimNum}. Denial: ${reason}. Action: Obtain supporting documentation and resubmit within 180 days.`,
+        message: `Appeal letter drafted for ${claimNum}.`,
         data: {
-          appealLetter: `Dear Claims Review Department,\n\nRe: Appeal for Claim ${claimNum}\n\nWe are writing to appeal the denial of the above-referenced claim for services rendered. The denial reason provided was: "${reason}."\n\nThe services billed were medically necessary and clinically appropriate for the patient's documented condition. We respectfully request reconsideration and attach supporting clinical documentation.\n\nPlease contact our billing department at billing@yeam.demo with any questions.\n\nSincerely,\nYeam Health Clinic — Billing Department`,
-          recommendedAction: 'Attach medical records and resubmit within 180 days of denial date',
+          appealLetter,
+          recommendedAction: 'Attach medical records and resubmit within 180 days of the denial date',
         },
         confidence: 0.80, reasoning: 'Stub (no GEMINI_API_KEY)', timestamp: new Date(),
       }
       return
     }
 
-    yield { taskId: task.id, agentName: this.name, status: 'working', message: 'Drafting with Gemini...', timestamp: new Date() }
+    yield { taskId: task.id, agentName: this.name, status: 'working', message: 'Drafting appeal letter...', timestamp: new Date() }
 
     const model = getModel(SYSTEM_PROMPT)
-    const result = await model.generateContent(
-      `Request: ${task.intent}\nContext: ${JSON.stringify(task.context, null, 2)}`
-    )
-    const text = result.response.text()
+    const result = await model.generateContent({
+      contents: [
+        {
+          role: 'user',
+          parts: [
+            {
+              text: `Draft the appeal letter now using this claim context. Output the letter text only — do not ask any questions.\n\n${JSON.stringify(ctx, null, 2)}`,
+            },
+          ],
+        },
+      ],
+      generationConfig: { temperature: 0.3 },
+    })
+    const appealLetter = stripPreamble(result.response.text())
 
     yield {
       taskId: task.id, agentName: this.name, status: 'complete',
-      message: text.slice(0, 200) + (text.length > 200 ? '...' : ''),
-      data: { appealLetter: text },
-      confidence: 0.91, reasoning: 'Gemini 2.0 Flash billing', timestamp: new Date(),
+      message: `Appeal letter drafted for ${claimNum}.`,
+      data: { appealLetter },
+      confidence: 0.91, reasoning: 'Gemini 2.5 Flash billing', timestamp: new Date(),
     }
   }
 }

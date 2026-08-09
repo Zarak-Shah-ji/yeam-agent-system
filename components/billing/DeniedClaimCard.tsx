@@ -49,6 +49,9 @@ export function DeniedClaimCard({ claim, onStatusChange }: Props) {
         body: JSON.stringify({
           intent: 'draft-appeal',
           context: {
+            // claimId drives a full server-side context fetch; the remaining
+            // fields are kept as a fallback if the lookup turns up nothing.
+            claimId: claim.id,
             claimNumber: claim.claimNumber,
             denialReason: claim.denialReason,
             patientName: `${claim.patient.firstName} ${claim.patient.lastName}`,
