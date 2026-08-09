@@ -24,6 +24,10 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   session: { strategy: 'jwt' },
   pages: {
     signIn: '/login',
+    // Send auth errors to the login page instead of NextAuth's built-in error
+    // route, which renders a 500. Without this, a stale link to a provider we
+    // no longer register (e.g. /api/auth/signin/github) is a hard error page.
+    error: '/login',
   },
   callbacks: {
     // No signIn gate: "Continue with Google" provisions an account on first use,
