@@ -4,11 +4,11 @@ import { Suspense, useState } from 'react'
 import { signIn } from 'next-auth/react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
-import Image from 'next/image'
 import { Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { GoogleButton } from '@/components/auth/GoogleButton'
+import { AuthBrandPanel, AuthMobileHeader } from '@/components/auth/AuthBrandPanel'
 import { trpc } from '@/lib/trpc/client'
 
 function SignupForm() {
@@ -48,41 +48,12 @@ function SignupForm() {
 
   return (
     <div className="flex min-h-screen">
-      {/* Left panel — branding */}
-      <div className="hidden md:flex md:w-1/2 flex-col items-center justify-center bg-blue-600 px-12 text-white">
-        <div className="flex flex-col items-center gap-6 text-center">
-          <div className="flex h-24 w-24 items-center justify-center rounded-2xl bg-white/15 backdrop-blur-sm">
-            <Image src="/logo.png" alt="Yeam.ai EHR" width={72} height={72} priority className="h-16 w-16" />
-          </div>
-          <div className="space-y-2">
-            <h1 className="text-4xl font-bold tracking-tight">Yeam.ai EHR</h1>
-            <p className="text-lg text-blue-100">Modern healthcare management,<br />powered by AI.</p>
-          </div>
-          <div className="mt-8 grid grid-cols-1 gap-3 text-sm text-blue-100 text-left w-full max-w-xs">
-            {[
-              'AI-assisted clinical documentation',
-              'Automated claim scrubbing & billing',
-              'Real-time analytics dashboard',
-            ].map(feature => (
-              <div key={feature} className="flex items-center gap-2">
-                <div className="h-1.5 w-1.5 rounded-full bg-blue-300 shrink-0" />
-                {feature}
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
+      <AuthBrandPanel />
 
       {/* Right panel — form */}
       <div className="flex w-full md:w-1/2 flex-col items-center justify-center bg-white px-8 py-12">
         <div className="w-full max-w-sm space-y-6">
-          {/* Mobile logo */}
-          <div className="flex flex-col items-center gap-2 md:hidden">
-            <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-blue-600">
-              <Image src="/logo.png" alt="Yeam.ai EHR" width={32} height={32} className="h-8 w-8" />
-            </div>
-            <h1 className="text-xl font-bold text-gray-900">Yeam.ai EHR</h1>
-          </div>
+          <AuthMobileHeader />
 
           <div className="space-y-1">
             <h2 className="text-2xl font-bold text-gray-900">Create an account</h2>
