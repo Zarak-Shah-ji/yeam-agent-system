@@ -15,7 +15,8 @@
     "db:studio": "prisma studio",
     "db:seed-medicaid": "tsx scripts/load-medicaid-data.ts",
     "db:backfill-denials": "tsx scripts/backfill-denial-reasons.ts",
-    "db:seed-appeals": "tsx scripts/seed-showcase-appeals.ts"
+    "db:seed-appeals": "tsx scripts/seed-showcase-appeals.ts",
+    "db:refresh-dates": "tsx scripts/refresh-demo-dates.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.30.0",
