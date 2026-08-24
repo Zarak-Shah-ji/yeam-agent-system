@@ -18,7 +18,7 @@ The letter must include:
 - Today's date and the payer's name/address block (use a bracketed placeholder if the payer address is missing).
 - A "Re:" line with the claim number, patient name, member ID, and date of service.
 - A body that formally requests reconsideration, states the services were medically necessary and clinically appropriate, and references the procedure (CPT/HCPCS) and diagnosis (ICD-10) codes provided.
-- A professional closing and signature block for the rendering provider / Yeam Health Clinic billing department.
+- A professional closing and a signature block (see the signature rule below).
 
 Begin directly with the letter (e.g. the date or "Dear ...").`
 
@@ -27,7 +27,9 @@ export const CLAIM_APPEAL_SYSTEM_PROMPT = `You are a medical billing specialist 
 
 You will be given the full claim context as JSON. Your ONLY job is to return a single, complete, ready-to-send appeal letter.
 
-${SHARED_RULES}`
+${SHARED_RULES}
+
+Signature rule: sign as the rendering provider named in the claim context, followed by the Yeam Health Clinic billing department. These are Yeam's own claims.`
 
 /** Drafting from an arbitrary denial document a user uploaded or pasted. */
 export const DOCUMENT_APPEAL_SYSTEM_PROMPT = `You are a medical billing specialist who drafts formal insurance appeal letters for denied claims.
@@ -38,7 +40,9 @@ First, read the source material and extract whatever it contains: claim number, 
 
 If the source covers several denied claims, appeal the single most substantial one and mention the others only if they share the same denial reason.
 
-${SHARED_RULES}`
+${SHARED_RULES}
+
+Signature rule: sign as the billing department of the rendering provider or practice named in the source document, with their NPI if it is given. If the source names no provider, use a bracketed placeholder such as [PRACTICE NAME] instead. Never sign as Yeam, Yeam Health Clinic, or Yeam.ai, and never append them to another practice's signature block — this letter belongs to whoever the source document names.`
 
 /** Safety net: strip any conversational lead-in or code fences a model might add. */
 export function stripPreamble(text: string): string {
