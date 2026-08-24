@@ -1,7 +1,14 @@
 import { BaseAgent } from './base-agent'
 import { GEMINI_AVAILABLE, getModel } from './gemini-client'
 import { buildAppealContext } from '@/lib/billing/appeal-context'
-import { CLAIM_APPEAL_SYSTEM_PROMPT, stripPreamble, todayLong } from '@/lib/billing/appeal-prompt'
+import {
+  buildClaimAppealPrompt,
+  stripInstructionalPlaceholders,
+  stripPreamble,
+  todayLong,
+} from '@/lib/billing/appeal-prompt'
+import type { PayerProfile } from '@/lib/billing/payers'
+import type { DenialPlaybook } from '@/lib/billing/denial-playbooks'
 import type { AgentEvent, AgentName, AgentTask } from './types'
 
 const KEYWORDS = ['appeal', 'denial', 'denied', 'payment', 'era', 'remittance', 'post payment', 'write off', 'void', 'resubmit', 'reconsider', 'appeal-denial', 'draft-appeal']
@@ -39,7 +46,7 @@ export class BillingAgent extends BaseAgent {
     // Summary fields persisted alongside the letter so downstream readers (the
     // /appeals review portal) can render a card without re-parsing the prose.
     const patientCtx = ctx.patient as { name?: string; memberId?: string } | undefined
-    const payerCtx = ctx.payer as { name?: string } | undefined
+    const payerCtx = ctx.payer as PayerProfile | undefined
     const summary = {
       claimNumber: claimNum,
       patientName: patientCtx?.name || (ctx.patientName as string) || null,
@@ -47,6 +54,13 @@ export class BillingAgent extends BaseAgent {
       serviceDate: (ctx.serviceDate as string) || null,
       denialReason: (ctx.denialReason as string) || null,
       denialCode: (ctx.denialCode as string) || null,
+      // Surfaced on the review portal card so a reader can judge the claim
+      // without opening the letter.
+      billedAmount: (ctx.billedAmount as number) ?? null,
+      appealDeadline: (ctx.appealDeadline as string) || null,
+      daysRemaining: (ctx.daysRemaining as number) ?? null,
+      deadlineGovernedBy: (ctx.deadlineGovernedBy as string) || null,
+      procedureCode: (ctx.procedure as { code?: string } | undefined)?.code ?? null,
     }
 
     if (!GEMINI_AVAILABLE) {
@@ -90,7 +104,9 @@ Yeam Health Clinic — Billing Department`
         data: {
           ...summary,
           appealLetter,
-          recommendedAction: 'Attach medical records and resubmit within 180 days of the denial date',
+          recommendedAction: payerCtx
+            ? `Submit via ${payerCtx.submissionChannel} within ${payerCtx.appealWindowDays} days of ${payerCtx.appealWindowFrom}`
+            : 'Attach medical records and resubmit within the payer\'s filing window',
         },
         confidence: 0.80, reasoning: 'Stub (no GEMINI_API_KEY)', timestamp: new Date(),
       }
@@ -99,7 +115,14 @@ Yeam Health Clinic — Billing Department`
 
     yield { taskId: task.id, agentName: this.name, status: 'working', message: 'Drafting appeal letter...', timestamp: new Date() }
 
-    const model = getModel(CLAIM_APPEAL_SYSTEM_PROMPT)
+    // The argument comes from the denial code and the voice from the payer, so
+    // the prompt is composed per claim rather than shared across all of them.
+    const model = getModel(
+      buildClaimAppealPrompt({
+        payer: payerCtx ?? null,
+        playbook: (ctx.playbook as DenialPlaybook | undefined) ?? null,
+      }),
+    )
     const result = await model.generateContent({
       contents: [
         {
@@ -113,7 +136,7 @@ Yeam Health Clinic — Billing Department`
       ],
       generationConfig: { temperature: 0.3 },
     })
-    const appealLetter = stripPreamble(result.response.text())
+    const appealLetter = stripInstructionalPlaceholders(stripPreamble(result.response.text()))
 
     yield {
       taskId: task.id, agentName: this.name, status: 'complete',

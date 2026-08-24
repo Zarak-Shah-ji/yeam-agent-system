@@ -31,8 +31,19 @@ export function AppealUploader() {
 
   function addFiles(incoming: FileList | null) {
     if (!incoming?.length) return
-    setError(null)
-    setFiles(prev => [...prev, ...Array.from(incoming)].slice(0, MAX_FILES))
+
+    // Copy the FileList out synchronously. It is a live view of the input's
+    // selection, and the change handler resets the input right after this
+    // returns — a deferred state updater would read it back empty.
+    const picked = Array.from(incoming)
+    const room = MAX_FILES - files.length
+
+    setError(
+      picked.length > room
+        ? `Only ${MAX_FILES} files can be attached at once — the extras were skipped.`
+        : null,
+    )
+    setFiles(prev => [...prev, ...picked].slice(0, MAX_FILES))
   }
 
   function removeFile(index: number) {
@@ -88,18 +99,21 @@ export function AppealUploader() {
         <p className="mt-1 text-xs text-gray-500">
           PDF, image, Word, Excel, or CSV — up to {MAX_FILES} files, {MAX_TOTAL_BYTES / 1024 / 1024} MB total
         </p>
-        <input
-          ref={inputRef}
-          type="file"
-          multiple
-          accept={ACCEPT}
-          className="hidden"
-          onChange={e => {
-            addFiles(e.target.files)
-            e.target.value = ''
-          }}
-        />
       </div>
+
+      {/* Kept outside the drop zone: a click() on a descendant input bubbles
+          back into the drop zone's own onClick and re-opens the picker. */}
+      <input
+        ref={inputRef}
+        type="file"
+        multiple
+        accept={ACCEPT}
+        className="hidden"
+        onChange={e => {
+          addFiles(e.target.files)
+          e.target.value = ''
+        }}
+      />
 
       {files.length > 0 && (
         <ul className="mt-4 space-y-2">

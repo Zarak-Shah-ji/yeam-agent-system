@@ -12,6 +12,7 @@ import path from 'path'
 import { parse } from 'csv-parse'
 import { faker } from '@faker-js/faker'
 import { PrismaClient } from '@prisma/client'
+import { diagnosesFor } from '../lib/billing/procedure-codes'
 
 const prisma = new PrismaClient({ log: [] })
 
@@ -22,74 +23,11 @@ const MAX_PROVIDERS_FOR_PATIENTS = 500
 const PATIENTS_PER_PROVIDER_MIN = 5
 const PATIENTS_PER_PROVIDER_MAX = 20
 
-// ─── HCPCS → ICD-10 mapping (top 60 common codes) ───────────────────────────
-
-const HCPCS_TO_ICD10: Record<string, string[]> = {
-  '99213': ['Z00.00', 'J06.9', 'I10'],
-  '99214': ['I10', 'E11.9', 'Z00.00'],
-  '99212': ['J06.9', 'Z00.00', 'R05'],
-  '99215': ['I10', 'E11.65', 'J45.20'],
-  '99211': ['Z00.00', 'J06.9'],
-  '99203': ['Z00.00', 'R10.9'],
-  '99204': ['E11.9', 'I10', 'M54.5'],
-  '99205': ['I10', 'E11.65', 'F32.9'],
-  '99202': ['Z00.00', 'J06.9'],
-  '90837': ['F32.9', 'F41.9', 'F41.1'],
-  '90834': ['F32.9', 'F41.9', 'F33.0'],
-  '90832': ['F32.9', 'F41.1'],
-  '90847': ['F32.9', 'Z63.0'],
-  '90853': ['F32.9', 'F41.9'],
-  '96150': ['F32.9', 'F41.9'],
-  '96152': ['F32.9', 'F41.9'],
-  '97110': ['M54.5', 'M79.3', 'S93.401A'],
-  '97530': ['M54.5', 'M62.81', 'S93.401A'],
-  '97140': ['M54.5', 'M25.511', 'M79.3'],
-  '97035': ['M54.5', 'M79.3'],
-  '92507': ['F80.9', 'F80.1', 'H91.90'],
-  '92526': ['F80.9', 'R13.10'],
-  '94640': ['J45.20', 'J44.1', 'J45.50'],
-  '94664': ['J45.20', 'J44.1'],
-  '94760': ['J96.00', 'J45.20'],
-  '94761': ['J96.00', 'J44.1'],
-  '96372': ['E11.9', 'I10', 'M06.9'],
-  '96402': ['C50.911', 'C34.10'],
-  '96413': ['C50.911', 'C34.10'],
-  '96415': ['C50.911', 'C34.10'],
-  '99281': ['R10.9', 'J06.9', 'S00.01XA'],
-  '99282': ['R10.9', 'I10', 'J06.9'],
-  '99283': ['R10.9', 'I10', 'M54.5'],
-  '99284': ['I21.9', 'R55', 'K92.1'],
-  '99285': ['I21.9', 'I63.9', 'S06.0X0A'],
-  '90460': ['Z23', 'Z00.129'],
-  '90461': ['Z23'],
-  '90471': ['Z23'],
-  '90472': ['Z23'],
-  '90716': ['Z23'],
-  '90734': ['Z23'],
-  '99391': ['Z00.110', 'Z00.111'],
-  '99392': ['Z00.121'],
-  '99393': ['Z00.129'],
-  '99394': ['Z00.3'],
-  '99395': ['Z00.00'],
-  '99396': ['Z00.00'],
-  '99397': ['Z00.00'],
-  'G0101': ['Z12.31', 'Z01.419'],
-  'G0121': ['Z12.11', 'Z12.12'],
-  'G0180': ['Z71.89', 'E11.9'],
-  'G0181': ['Z71.89', 'J44.1'],
-  'G0270': ['E66.9', 'Z71.3'],
-  'G0271': ['E66.9', 'Z71.3'],
-  'T1002': ['F32.9', 'F20.9'],
-  'T1016': ['F32.9', 'F20.9'],
-  'T1017': ['F32.9', 'F41.9'],
-  'H0001': ['F10.10', 'F11.10'],
-  'H0004': ['F10.10', 'F11.10'],
-  'H0020': ['F10.20', 'F11.20'],
-}
-
-function getIcd10(procCode: string): string[] {
-  return HCPCS_TO_ICD10[procCode] ?? ['Z00.00']
-}
+// HCPCS → ICD-10 pairings live in lib/billing/procedure-codes.ts so the loader,
+// the repair script and the appeal letters cannot drift apart. The previous
+// local map covered ~60 codes and fell back to Z00.00 (routine adult physical)
+// for everything else, which is how 85% of denied claims ended up citing a
+// well-visit code against attendant care and personal care services.
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -487,7 +425,7 @@ async function main() {
           billingNpi: npi,
           encounterDate,
           procCode,
-          diagnosisCodes: getIcd10(procCode),
+          diagnosisCodes: diagnosesFor(procCode, `${patientId}:${e}:${procCode}`),
           status: 'completed',
           claimStatus,
           paidAmount: claimStatus === 'paid' || claimStatus === 'clean'

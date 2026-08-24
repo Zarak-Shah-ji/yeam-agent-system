@@ -17,7 +17,7 @@ import { createHash } from 'node:crypto'
 import { prisma } from '../lib/db'
 
 /** Keep every date of service inside this many days of today. */
-const WINDOW_DAYS = 90
+const WINDOW_DAYS = 200
 
 /**
  * Denial codes that contradict a recent date of service. A timely-filing denial
@@ -25,8 +25,16 @@ const WINDOW_DAYS = 90
  * recent pool rather than surfacing in the showcase.
  */
 const TIME_DEPENDENT_CODES = new Set(['CO-29'])
-/** Leave a few days of margin so nothing lands in the future. */
-const MIN_AGE_DAYS = 4
+/**
+ * A claim cannot be submitted, adjudicated, denied and appealed inside a week.
+ * Payers take 14-45 days to adjudicate, so the date of service has to sit far
+ * enough back that the remittance it is being appealed against could exist.
+ */
+const MIN_AGE_DAYS = 60
+
+/** Adjudication lag: days from date of service to the remittance advice. */
+const ADJUDICATION_MIN_DAYS = 14
+const ADJUDICATION_MAX_DAYS = 45
 
 const DAY_MS = 24 * 60 * 60 * 1000
 
@@ -41,6 +49,18 @@ function daysAgoFor(id: string): number {
   const digest = createHash('sha256').update(id).digest()
   const span = WINDOW_DAYS - MIN_AGE_DAYS
   return MIN_AGE_DAYS + (digest.readUInt32BE(0) % span)
+}
+
+/**
+ * Remittance date for a given service date. The appeal filing window runs from
+ * here, so it has to move whenever the date of service moves — otherwise the
+ * letter cites a deadline computed against a date that no longer exists.
+ */
+function remittanceFor(id: string, serviceDate: Date): Date {
+  const digest = createHash('sha256').update(`${id}:lag`).digest()
+  const span = ADJUDICATION_MAX_DAYS - ADJUDICATION_MIN_DAYS
+  const lag = ADJUDICATION_MIN_DAYS + (digest.readUInt32BE(0) % span)
+  return new Date(serviceDate.getTime() + lag * DAY_MS)
 }
 
 async function main() {
@@ -69,13 +89,16 @@ async function main() {
     pool.push(enc)
   }
 
-  const stale = pool.filter(e => e.encounterDate < cutoff)
-  if (stale.length === 0) {
-    console.log(`All ${pool.length} pooled encounters are already within ${WINDOW_DAYS} days. Nothing to do.`)
-    return
-  }
-
-  console.log(`Moving ${stale.length} of ${pool.length} pooled encounter(s) into the last ${WINDOW_DAYS} days...`)
+  // Two failure modes, not one. Dates older than the window read as stale; dates
+  // newer than MIN_AGE_DAYS are worse, because they imply a claim submitted,
+  // adjudicated, denied and appealed inside a few days.
+  const tooRecentCutoff = new Date(Date.now() - MIN_AGE_DAYS * DAY_MS)
+  const stale = pool.filter(e => e.encounterDate < cutoff || e.encounterDate > tooRecentCutoff)
+  console.log(
+    stale.length === 0
+      ? `All ${pool.length} pooled encounters already sit between ${MIN_AGE_DAYS} and ${WINDOW_DAYS} days ago.`
+      : `Moving ${stale.length} of ${pool.length} pooled encounter(s) into the ${MIN_AGE_DAYS}-${WINDOW_DAYS} day window...`,
+  )
 
   let updated = 0
   for (const enc of stale) {
@@ -85,20 +108,38 @@ async function main() {
     next.setHours(enc.encounterDate.getHours(), enc.encounterDate.getMinutes(), 0, 0)
     await prisma.medicaidEncounter.update({
       where: { id: enc.id },
-      data: { encounterDate: next },
+      data: { encounterDate: next, remittanceDate: remittanceFor(enc.id, next) },
     })
     updated++
   }
 
-  const fresh = await prisma.medicaidEncounter.findMany({
-    where: { claimStatus: 'denied', encounterDate: { gte: cutoff } },
-    select: { encounterDate: true },
-    orderBy: { encounterDate: 'desc' },
-    take: 1,
+  // The pool is capped per denial code, so a few too-recent rows can fall
+  // outside it. The invariant belongs to every denied claim, not just pooled
+  // ones, so sweep whatever the pool pass missed.
+  const strays = await prisma.medicaidEncounter.findMany({
+    where: { claimStatus: 'denied', encounterDate: { gt: tooRecentCutoff } },
+    select: { id: true, encounterDate: true },
+  })
+  for (const enc of strays) {
+    const next = new Date(Date.now() - daysAgoFor(enc.id) * DAY_MS)
+    next.setHours(enc.encounterDate.getHours(), enc.encounterDate.getMinutes(), 0, 0)
+    await prisma.medicaidEncounter.update({
+      where: { id: enc.id },
+      data: { encounterDate: next, remittanceDate: remittanceFor(enc.id, next) },
+    })
+    updated++
+  }
+
+  const impossible = await prisma.medicaidEncounter.count({
+    where: { claimStatus: 'denied', encounterDate: { gt: tooRecentCutoff } },
   })
 
   console.log(`\nDone. ${updated} encounter(s) updated.`)
-  console.log(`Newest denied date of service is now ${fresh[0]?.encounterDate.toDateString() ?? 'n/a'}.`)
+  console.log(
+    impossible === 0
+      ? `No denied claim has a date of service inside ${MIN_AGE_DAYS} days. Timelines are plausible.`
+      : `WARNING: ${impossible} denied claim(s) still dated inside ${MIN_AGE_DAYS} days — re-run with a larger --pool.`,
+  )
 }
 
 main()

@@ -423,6 +423,9 @@ model MedicaidPatient {
   zip                 String?
   insuranceType       String?  @default("Medicaid")
   insuranceId         String?
+  // Key into the payer directory in lib/billing/payers.ts. Drives the address
+  // block, appeal window and house style used when drafting an appeal letter.
+  payerKey            String?
   insuranceStatus     String?  @default("active")
   primaryProviderNpi  String?
   primaryProvider     MedicaidProvider?   @relation(fields: [primaryProviderNpi], references: [npi])
@@ -445,6 +448,12 @@ model MedicaidEncounter {
   status          String?  @default("completed")
   claimStatus     String?  @default("clean")
   paidAmount      Decimal? @db.Decimal(12, 2)
+  // Submitted charge. Distinct from paidAmount, which is 0 on a denied claim —
+  // an appeal letter has to state the amount actually in dispute.
+  billedAmount    Decimal? @db.Decimal(12, 2)
+  // Date the remittance advice / R&S report was issued. The appeal filing
+  // window runs from this date, not from the date of service.
+  remittanceDate  DateTime?
   denialReason    String?
   denialCode      String?  // CARC/RARC, e.g. "CO-50"
   notes           String?

@@ -8,6 +8,14 @@ export interface ShowcaseAppeal {
   serviceDate: string | null
   denialReason: string | null
   denialCode: string | null
+  /** Amount in dispute, so the card conveys whether the claim is worth working. */
+  billedAmount: number | null
+  /** Last date the appeal can be filed under the payer's published window. */
+  appealDeadline: string | null
+  daysRemaining: number | null
+  /** 'remittance' or 'date-of-service' — which limit produced the deadline. */
+  deadlineGovernedBy: string | null
+  procedureCode: string | null
   letter: string
   createdAt: Date
 }
@@ -29,6 +37,25 @@ function parseFromLetter(letter: string, field: RegExp): string | null {
 
 function str(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value.trim() : null
+}
+
+function num(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
+const DAY_MS = 86_400_000
+
+/**
+ * Days left to file, recomputed against today rather than read from the stored
+ * value. The agent stamps `daysRemaining` when it drafts, so a letter sitting in
+ * the log for a month would otherwise keep advertising the countdown it had on
+ * the day it was written. The deadline date is fixed; the countdown is not.
+ */
+function daysUntil(deadline: string | null): number | null {
+  if (!deadline) return null
+  const parsed = Date.parse(deadline)
+  if (Number.isNaN(parsed)) return null
+  return Math.round((parsed - Date.now()) / DAY_MS)
 }
 
 /**
@@ -76,6 +103,11 @@ export async function listShowcaseAppeals(limit = 5): Promise<ShowcaseAppeal[]> 
         str(data.serviceDate) ?? parseFromLetter(letter, /Date of Service:\s*(.+)/i),
       denialReason: str(data.denialReason),
       denialCode: str(data.denialCode),
+      billedAmount: num(data.billedAmount),
+      appealDeadline: str(data.appealDeadline),
+      daysRemaining: daysUntil(str(data.appealDeadline)) ?? num(data.daysRemaining),
+      deadlineGovernedBy: str(data.deadlineGovernedBy),
+      procedureCode: str(data.procedureCode),
       letter,
       createdAt: row.createdAt,
     })

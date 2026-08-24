@@ -4,30 +4,13 @@
  */
 import { faker } from '@faker-js/faker'
 import { PrismaClient } from '@prisma/client'
+import { diagnosesFor, PROCEDURES } from '../lib/billing/procedure-codes'
 
 const prisma = new PrismaClient({ log: [] })
 
-const HCPCS_TO_ICD10: Record<string, string[]> = {
-  '99213': ['Z00.00', 'J06.9', 'I10'],
-  '99214': ['I10', 'E11.9', 'Z00.00'],
-  '99212': ['J06.9', 'Z00.00', 'R05'],
-  '99215': ['I10', 'E11.65', 'J45.20'],
-  '90837': ['F32.9', 'F41.9', 'F41.1'],
-  '97110': ['M54.5', 'M79.3', 'S93.401A'],
-  '97530': ['M54.5', 'M62.81'],
-  '96372': ['E11.9', 'I10', 'M06.9'],
-  '99281': ['R10.9', 'J06.9'],
-  '99284': ['I21.9', 'R55', 'K92.1'],
-  '92507': ['F80.9', 'F80.1'],
-  '94640': ['J45.20', 'J44.1'],
-  '99203': ['Z00.00', 'R10.9'],
-  '99204': ['E11.9', 'I10', 'M54.5'],
-  '36415': ['Z13.6', 'E11.9'],
-  '71046': ['J18.9', 'J44.1'],
-  '93000': ['I10', 'I25.10'],
-  '85025': ['D50.9', 'E11.9'],
-}
-const PROC_CODES = Object.keys(HCPCS_TO_ICD10)
+// Pairings come from lib/billing/procedure-codes.ts — see the note there on why
+// the old local map (which defaulted every unmapped code to Z00.00) was removed.
+const PROC_CODES = Object.keys(PROCEDURES)
 const CLAIM_STATUSES = ['clean', 'paid', 'denied', 'flagged', 'resubmitted'] as const
 const CITIES = ['Houston', 'Dallas', 'San Antonio', 'Austin', 'Fort Worth', 'El Paso', 'Arlington', 'Corpus Christi']
 const MONTHS = ['2023-01', '2023-04', '2023-07', '2023-10', '2024-01', '2024-04', '2024-07', '2024-10', '2025-01']
@@ -113,7 +96,7 @@ async function main() {
     for (let j = 0; j < numEnc; j++) {
       const providerNpi = faker.helpers.arrayElement(providerNpis)
       const procCode = faker.helpers.arrayElement(PROC_CODES)
-      const diagCodes = faker.helpers.arrayElements(HCPCS_TO_ICD10[procCode] ?? ['Z00.00'], { min: 1, max: 3 })
+      const diagCodes = diagnosesFor(procCode, `${patientId}:${j}:${procCode}`)
       await prisma.medicaidEncounter.create({
         data: {
           patientId,

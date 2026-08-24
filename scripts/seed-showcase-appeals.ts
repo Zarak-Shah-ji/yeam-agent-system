@@ -9,13 +9,27 @@
  *
  *   pnpm db:seed-appeals            # no-op if enough letters already exist
  *   pnpm db:seed-appeals --force    # draft another batch regardless
+ *   pnpm db:seed-appeals --replace  # delete prior showcase letters, then redraft
+ *
+ * This step depends on the claim data being repaired first — letters are only as
+ * credible as the codes, payers and amounts behind them. Run the whole pipeline
+ * with `pnpm db:rebuild-appeals`, which chains:
+ *
+ *   db:backfill-denials → db:fix-clinical → db:refresh-dates → db:seed-appeals
  */
 import { prisma } from '../lib/db'
 import { GEMINI_AVAILABLE } from '../lib/agents/gemini-client'
 import { dispatch } from '../lib/agents/orchestrator'
-import { listShowcaseAppeals } from '../lib/billing/showcase-appeals'
+import { listShowcaseAppeals, PORTAL_SESSION } from '../lib/billing/showcase-appeals'
+import { getPayer, resolveAppealWindow } from '../lib/billing/payers'
 
-const TARGET_COUNT = 6
+const TARGET_COUNT = 8
+
+/**
+ * Claims below this are not worth a billing manager's time to appeal, and a
+ * showcase letter arguing over $1.03 of venipuncture undercuts the whole demo.
+ */
+const MIN_BILLED_AMOUNT = 60
 
 /** A timely-filing denial contradicts a recent date of service — skip it. */
 const SKIP_CODES = new Set(['CO-29'])
@@ -40,7 +54,17 @@ async function withRetry<T>(label: string, fn: () => Promise<T>, attempts = 4): 
 
 
 async function main() {
-  const force = process.argv.includes('--force')
+  const replace = process.argv.includes('--replace')
+  const force = replace || process.argv.includes('--force')
+
+  // Letters drafted before a prompt or data fix stay visible on the portal and
+  // sit alongside the corrected ones, so a rebuild has to clear them out.
+  if (replace) {
+    const { count } = await prisma.agentLog.deleteMany({
+      where: { agentName: 'BILLING', status: 'COMPLETE', NOT: { sessionId: PORTAL_SESSION } },
+    })
+    console.log(`Removed ${count} previously seeded billing log(s).\n`)
+  }
 
   if (!GEMINI_AVAILABLE) {
     console.error('GEMINI_API_KEY is not set — letters would be stub text. Aborting.')
@@ -65,25 +89,48 @@ async function main() {
       claimStatus: 'denied',
       denialReason: { not: null },
       procCode: { not: '' },
+      remittanceDate: { not: null },
+      billedAmount: { gte: MIN_BILLED_AMOUNT },
     },
     include: { patient: true },
     orderBy: { encounterDate: 'desc' },
-    take: 200,
+    take: 400,
   })
 
+  /**
+   * Still inside the filing window — an expired appeal is not a demo. Checks
+   * both clocks: the window from the remittance AND the Medicaid 24-month
+   * ceiling from the date of service, whichever binds first.
+   */
+  const filable = candidates.filter(enc => {
+    const payer = getPayer(enc.patient.payerKey)
+    if (!payer || !enc.remittanceDate) return false
+    const w = resolveAppealWindow(payer, enc.remittanceDate, enc.encounterDate)
+    return w.deadline.getTime() > Date.now()
+  })
+
+  // Spread across BOTH denial code and payer. Varying only the denial code
+  // still produced eight letters addressed to the same payer, which is what
+  // made the set read as one template with the details swapped.
   const seenCodes = new Set<string>()
+  const payerCounts = new Map<string, number>()
+  const maxPerPayer = Math.max(1, Math.ceil(needed / 3))
   const picked: typeof candidates = []
-  for (const enc of candidates) {
+
+  for (const enc of filable) {
     if (picked.length >= needed) break
     const code = enc.denialCode ?? 'unknown'
+    const payerKey = enc.patient.payerKey ?? 'unknown'
     if (seenCodes.has(code)) continue
     if (SKIP_CODES.has(code)) continue
     if (enc.diagnosisCodes.length === 0) continue
+    if ((payerCounts.get(payerKey) ?? 0) >= maxPerPayer) continue
     seenCodes.add(code)
+    payerCounts.set(payerKey, (payerCounts.get(payerKey) ?? 0) + 1)
     picked.push(enc)
   }
   // If distinct codes ran out, top up with whatever else qualifies.
-  for (const enc of candidates) {
+  for (const enc of filable) {
     if (picked.length >= needed) break
     if (picked.some(p => p.id === enc.id)) continue
     if (enc.denialCode && SKIP_CODES.has(enc.denialCode)) continue
@@ -92,8 +139,8 @@ async function main() {
   }
 
   if (picked.length === 0) {
-    console.error('No denied encounters with a denial reason found.')
-    console.error('Run `pnpm db:backfill-denials` first.')
+    console.error('No filable denied encounters found.')
+    console.error('Run `pnpm db:backfill-denials`, `pnpm db:fix-clinical`, then `pnpm db:refresh-dates`.')
     process.exitCode = 1
     return
   }
@@ -104,7 +151,10 @@ async function main() {
   for (const enc of picked) {
     const claimNumber = 'ENC-' + enc.id.slice(0, 8).toUpperCase()
     const patientName = [enc.patient.firstName, enc.patient.lastName].filter(Boolean).join(' ')
-    process.stdout.write(`  ${claimNumber} (${enc.denialCode}) ${patientName} ... `)
+    const payer = getPayer(enc.patient.payerKey)
+    process.stdout.write(
+      `  ${claimNumber} ${(enc.denialCode ?? '?').padEnd(7)} ${(payer?.shortName ?? '?').padEnd(12)} $${String(enc.billedAmount ?? 0).padStart(8)}  ${patientName} ... `,
+    )
 
     try {
       // Go through the orchestrator so BaseAgent's logging writes the AgentLog

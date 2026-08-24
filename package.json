@@ -16,7 +16,9 @@
     "db:seed-medicaid": "tsx scripts/load-medicaid-data.ts",
     "db:backfill-denials": "tsx scripts/backfill-denial-reasons.ts",
     "db:seed-appeals": "tsx scripts/seed-showcase-appeals.ts",
-    "db:refresh-dates": "tsx scripts/refresh-demo-dates.ts"
+    "db:refresh-dates": "tsx scripts/refresh-demo-dates.ts",
+    "db:fix-clinical": "tsx scripts/fix-claim-clinical-data.ts",
+    "db:rebuild-appeals": "pnpm db:backfill-denials && pnpm db:fix-clinical && pnpm db:refresh-dates && pnpm db:seed-appeals --replace"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.30.0",

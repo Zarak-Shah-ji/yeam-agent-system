@@ -20,10 +20,30 @@ function preview(letter: string): string {
 export function AppealShowcaseCard({ appeal, index }: { appeal: ShowcaseAppeal; index: number }) {
   const [open, setOpen] = useState(index === 0)
 
+  const money =
+    appeal.billedAmount != null
+      ? appeal.billedAmount.toLocaleString('en-US', { style: 'currency', currency: 'USD' })
+      : null
+
   const fields = [
     ['Patient', appeal.patientName],
     ['Payer', appeal.payerName],
     ['Date of service', appeal.serviceDate],
+    ['Amount in dispute', money],
+    ['Procedure', appeal.procedureCode],
+    // Only meaningful while the window is open; a negative count would advertise
+    // an appeal that can no longer be filed. The suffix names which clock set
+    // the date, since the two are routinely confused.
+    [
+      'Appeal deadline',
+      appeal.appealDeadline && appeal.daysRemaining != null && appeal.daysRemaining > 0
+        ? `${appeal.appealDeadline} · ${appeal.daysRemaining} days left${
+            appeal.deadlineGovernedBy === 'date-of-service'
+              ? ' (24-mo limit from DOS)'
+              : ' (from remittance)'
+          }`
+        : appeal.appealDeadline,
+    ],
   ].filter(([, value]) => !!value) as [string, string][]
 
   return (
@@ -35,7 +55,7 @@ export function AppealShowcaseCard({ appeal, index }: { appeal: ShowcaseAppeal; 
         </div>
 
         {fields.length > 0 && (
-          <dl className="mt-3 grid grid-cols-1 gap-x-6 gap-y-1 text-sm sm:grid-cols-3">
+          <dl className="mt-3 grid grid-cols-1 gap-x-6 gap-y-2 text-sm sm:grid-cols-3">
             {fields.map(([label, value]) => (
               <div key={label}>
                 <dt className="text-xs uppercase tracking-wide text-gray-400">{label}</dt>
