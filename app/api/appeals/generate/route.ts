@@ -7,6 +7,7 @@ import {
   fileToSourcePart,
 } from '@/lib/appeals/parse-upload'
 import { draftAppealFromDocument, type SourcePart } from '@/lib/billing/draft-appeal-from-document'
+import { PORTAL_SESSION } from '@/lib/billing/showcase-appeals'
 import { prisma } from '@/lib/db'
 
 export const runtime = 'nodejs'
@@ -131,7 +132,7 @@ export async function POST(req: Request) {
         reasoning: 'Gemini 2.5 Flash billing (appeals review portal)',
         confidence: 0.91,
         data: { appealLetter: letter, sourceLabel },
-        sessionId: 'appeals-portal',
+        sessionId: PORTAL_SESSION,
       },
     })
     .catch(err => console.error('agent log write failed', err))

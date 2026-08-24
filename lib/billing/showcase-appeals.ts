@@ -10,12 +10,13 @@ export interface ShowcaseAppeal {
   denialCode: string | null
   letter: string
   createdAt: Date
-  /** Where it came from: the in-app billing screen, or this review portal. */
-  source: 'dashboard' | 'portal'
 }
 
 /** Minimum length that distinguishes a real drafted letter from a stub/error blurb. */
 const MIN_LETTER_LENGTH = 200
+
+/** sessionId stamped on letters drafted from a visitor upload in the portal. */
+export const PORTAL_SESSION = 'appeals-portal'
 
 /**
  * Pull the letter's own "Re:" header apart for rows written before the agent
@@ -31,18 +32,26 @@ function str(value: unknown): string | null {
 }
 
 /**
- * Read the appeal letters the system has actually generated.
+ * Read the appeal letters the system has generated from live claim data.
  *
  * There is no Appeal table — BaseAgent persists every completed agent event to
  * `AgentLog`, and the billing agent's `data` payload carries the letter. That
  * log is the system of record for generated letters, so the review portal reads
  * from it directly and always reflects live output.
+ *
+ * Letters drafted from a visitor's own upload are excluded: they are returned to
+ * them directly, and including them here would push the curated set off the page
+ * after a few uploads.
  */
 export async function listShowcaseAppeals(limit = 5): Promise<ShowcaseAppeal[]> {
   // Over-fetch: some BILLING/COMPLETE rows are post-payment or query intents
   // that carry no letter at all, and they get filtered out below.
   const rows = await prisma.agentLog.findMany({
-    where: { agentName: 'BILLING', status: 'COMPLETE' },
+    where: {
+      agentName: 'BILLING',
+      status: 'COMPLETE',
+      NOT: { sessionId: PORTAL_SESSION },
+    },
     orderBy: { createdAt: 'desc' },
     take: 40,
   })
@@ -69,7 +78,6 @@ export async function listShowcaseAppeals(limit = 5): Promise<ShowcaseAppeal[]> 
       denialCode: str(data.denialCode),
       letter,
       createdAt: row.createdAt,
-      source: row.sessionId === 'appeals-portal' ? 'portal' : 'dashboard',
     })
 
     if (appeals.length >= limit) break

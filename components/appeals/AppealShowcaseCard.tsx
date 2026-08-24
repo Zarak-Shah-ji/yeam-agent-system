@@ -7,7 +7,15 @@ import { LetterActions } from './LetterActions'
 import type { ShowcaseAppeal } from '@/lib/billing/showcase-appeals'
 
 /** Length of the preview shown before the reader expands the full letter. */
-const PREVIEW_CHARS = 260
+const PREVIEW_CHARS = 420
+
+/** Cut at the last full line so the preview never ends mid-word. */
+function preview(letter: string): string {
+  if (letter.length <= PREVIEW_CHARS) return letter
+  const slice = letter.slice(0, PREVIEW_CHARS)
+  const lastBreak = slice.lastIndexOf('\n')
+  return `${(lastBreak > PREVIEW_CHARS * 0.5 ? slice.slice(0, lastBreak) : slice).trimEnd()}…`
+}
 
 export function AppealShowcaseCard({ appeal, index }: { appeal: ShowcaseAppeal; index: number }) {
   const [open, setOpen] = useState(index === 0)
@@ -24,7 +32,6 @@ export function AppealShowcaseCard({ appeal, index }: { appeal: ShowcaseAppeal; 
         <div className="flex flex-wrap items-center gap-2">
           <h3 className="font-semibold text-gray-900">{appeal.claimNumber ?? 'Appeal letter'}</h3>
           {appeal.denialCode && <Badge variant="warning">{appeal.denialCode}</Badge>}
-          {appeal.source === 'portal' && <Badge variant="info">Drafted here</Badge>}
         </div>
 
         {fields.length > 0 && (
@@ -48,7 +55,7 @@ export function AppealShowcaseCard({ appeal, index }: { appeal: ShowcaseAppeal; 
 
       <div className="px-5 py-4">
         <pre className="whitespace-pre-wrap break-words font-mono text-[13px] leading-relaxed text-gray-800">
-          {open ? appeal.letter : `${appeal.letter.slice(0, PREVIEW_CHARS).trimEnd()}…`}
+          {open ? appeal.letter : preview(appeal.letter)}
         </pre>
 
         <div className="mt-4 flex flex-wrap items-center gap-2">
