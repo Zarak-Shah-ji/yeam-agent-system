@@ -11,6 +11,7 @@ export interface AppealContext {
   claimStatus: string
   totalCharge: number | null
   denialReason: string | null
+  denialCode: string | null
   payer: {
     name: string
     claimsAddress: string | null
@@ -77,11 +78,13 @@ export async function buildAppealContext(claimId: string): Promise<AppealContext
     serviceDate: fmtDate(enc.encounterDate),
     claimStatus: enc.claimStatus ?? 'denied',
     totalCharge: enc.paidAmount?.toNumber() ?? null,
-    // Denial reason / CARC-RARC code is not stored on MedicaidEncounter.
-    denialReason: null,
+    denialReason: enc.denialReason,
+    denialCode: enc.denialCode,
     payer: {
       name: 'Texas Medicaid',
-      claimsAddress: null,
+      // TMHP handles Texas Medicaid claim appeals; the dataset carries no payer
+      // record, so use the published appeals address rather than a placeholder.
+      claimsAddress: 'Texas Medicaid & Healthcare Partnership\nAttn: Claim Appeals\nPO Box 200645\nAustin, TX 78720-0645',
     },
     patient: {
       name: [enc.patient.firstName, enc.patient.lastName].filter(Boolean).join(' '),

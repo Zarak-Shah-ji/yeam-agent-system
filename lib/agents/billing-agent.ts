@@ -1,43 +1,12 @@
 import { BaseAgent } from './base-agent'
 import { GEMINI_AVAILABLE, getModel } from './gemini-client'
 import { buildAppealContext } from '@/lib/billing/appeal-context'
+import { CLAIM_APPEAL_SYSTEM_PROMPT, stripPreamble, todayLong } from '@/lib/billing/appeal-prompt'
 import type { AgentEvent, AgentName, AgentTask } from './types'
-
-const SYSTEM_PROMPT = `You are a medical billing specialist who drafts formal insurance appeal letters for denied claims.
-
-You will be given the full claim context as JSON. Your ONLY job is to return a single, complete, ready-to-send appeal letter.
-
-Hard rules:
-- Output ONLY the letter itself. No preamble, no explanation, no commentary, no markdown code fences, no "I understand", no "Here is".
-- NEVER ask for more information and NEVER request clarification. You already have everything you need to write the letter.
-- If a field is missing or null (for example the denial reason or the payer's appeals address), DO NOT ask for it. Insert a clearly-marked bracketed placeholder such as [DENIAL REASON — SEE ATTACHED EOB/ERA] and write the appeal on general medical-necessity grounds.
-- Use only the data provided. Do not invent member IDs, addresses, NPIs, dates, or codes that are not present.
-
-The letter must include:
-- Today's date and the payer's name/address block (use a bracketed placeholder if the payer address is missing).
-- A "Re:" line with the claim number, patient name, member ID, and date of service.
-- A body that formally requests reconsideration, states the services were medically necessary and clinically appropriate, and references the procedure (CPT/HCPCS) and diagnosis (ICD-10) codes provided.
-- A professional closing and signature block for the rendering provider / Yeam Health Clinic billing department.
-
-Begin directly with the letter (e.g. the date or "Dear ...").`
 
 const KEYWORDS = ['appeal', 'denial', 'denied', 'payment', 'era', 'remittance', 'post payment', 'write off', 'void', 'resubmit', 'reconsider', 'appeal-denial', 'draft-appeal']
 
 const DENIAL_PLACEHOLDER = '[DENIAL REASON — SEE ATTACHED EOB/ERA]'
-
-/** Safety net: strip any conversational lead-in or code fences a model might add. */
-function stripPreamble(text: string): string {
-  let t = text.trim()
-  if (t.startsWith('```')) {
-    t = t.replace(/^```[a-zA-Z]*\n?/, '').replace(/\n?```$/, '').trim()
-  }
-  // Drop a single leading conversational sentence if the model added one.
-  t = t.replace(
-    /^(sure|certainly|of course|here(?:'s| is)|i understand|i'd be happy|i can|below is|please find)\b[^\n]*\n+/i,
-    '',
-  ).trim()
-  return t
-}
 
 export class BillingAgent extends BaseAgent {
   name: AgentName = 'billing'
@@ -67,18 +36,29 @@ export class BillingAgent extends BaseAgent {
 
     const claimNum = (ctx.claimNumber as string) || 'CLM-XXXX'
 
+    // Summary fields persisted alongside the letter so downstream readers (the
+    // /appeals review portal) can render a card without re-parsing the prose.
+    const patientCtx = ctx.patient as { name?: string; memberId?: string } | undefined
+    const payerCtx = ctx.payer as { name?: string } | undefined
+    const summary = {
+      claimNumber: claimNum,
+      patientName: patientCtx?.name || (ctx.patientName as string) || null,
+      payerName: payerCtx?.name || (typeof ctx.payer === 'string' ? ctx.payer : null),
+      serviceDate: (ctx.serviceDate as string) || null,
+      denialReason: (ctx.denialReason as string) || null,
+      denialCode: (ctx.denialCode as string) || null,
+    }
+
     if (!GEMINI_AVAILABLE) {
       yield { taskId: task.id, agentName: this.name, status: 'working', message: 'Drafting appeal letter...', timestamp: new Date() }
       await new Promise(r => setTimeout(r, 400))
 
-      const patient = ctx.patient as { name?: string; memberId?: string } | undefined
-      const payer = ctx.payer as { name?: string } | undefined
-      const patientName = patient?.name || (ctx.patientName as string) || '[PATIENT NAME]'
-      const memberId = patient?.memberId || '[MEMBER ID]'
-      const payerName = payer?.name || (ctx.payer as string) || '[PAYER NAME]'
+      const patientName = summary.patientName || '[PATIENT NAME]'
+      const memberId = patientCtx?.memberId || '[MEMBER ID]'
+      const payerName = summary.payerName || '[PAYER NAME]'
       const serviceDate = (ctx.serviceDate as string) || '[DATE OF SERVICE]'
       const reason = (ctx.denialReason as string) || DENIAL_PLACEHOLDER
-      const today = new Intl.DateTimeFormat('en-US', { month: 'long', day: 'numeric', year: 'numeric' }).format(new Date())
+      const today = todayLong()
 
       const appealLetter = `${today}
 
@@ -108,6 +88,7 @@ Yeam Health Clinic — Billing Department`
         taskId: task.id, agentName: this.name, status: 'complete',
         message: `Appeal letter drafted for ${claimNum}.`,
         data: {
+          ...summary,
           appealLetter,
           recommendedAction: 'Attach medical records and resubmit within 180 days of the denial date',
         },
@@ -118,14 +99,14 @@ Yeam Health Clinic — Billing Department`
 
     yield { taskId: task.id, agentName: this.name, status: 'working', message: 'Drafting appeal letter...', timestamp: new Date() }
 
-    const model = getModel(SYSTEM_PROMPT)
+    const model = getModel(CLAIM_APPEAL_SYSTEM_PROMPT)
     const result = await model.generateContent({
       contents: [
         {
           role: 'user',
           parts: [
             {
-              text: `Draft the appeal letter now using this claim context. Output the letter text only — do not ask any questions.\n\n${JSON.stringify(ctx, null, 2)}`,
+              text: `Today's date is ${todayLong()}. Use it as the letter date.\n\nDraft the appeal letter now using this claim context. Output the letter text only — do not ask any questions.\n\n${JSON.stringify(ctx, null, 2)}`,
             },
           ],
         },
@@ -137,7 +118,7 @@ Yeam Health Clinic — Billing Department`
     yield {
       taskId: task.id, agentName: this.name, status: 'complete',
       message: `Appeal letter drafted for ${claimNum}.`,
-      data: { appealLetter },
+      data: { ...summary, appealLetter },
       confidence: 0.91, reasoning: 'Gemini 2.5 Flash billing', timestamp: new Date(),
     }
   }
