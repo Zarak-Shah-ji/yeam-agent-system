@@ -16,6 +16,9 @@ import { dispatch } from '../lib/agents/orchestrator'
 import { listShowcaseAppeals } from '../lib/billing/showcase-appeals'
 
 const TARGET_COUNT = 6
+
+/** A timely-filing denial contradicts a recent date of service — skip it. */
+const SKIP_CODES = new Set(['CO-29'])
 /** Gemini returns transient 503s under load; a couple of backed-off retries clears them. */
 async function withRetry<T>(label: string, fn: () => Promise<T>, attempts = 4): Promise<T> {
   let lastErr: unknown
@@ -74,6 +77,7 @@ async function main() {
     if (picked.length >= needed) break
     const code = enc.denialCode ?? 'unknown'
     if (seenCodes.has(code)) continue
+    if (SKIP_CODES.has(code)) continue
     if (enc.diagnosisCodes.length === 0) continue
     seenCodes.add(code)
     picked.push(enc)
@@ -82,6 +86,7 @@ async function main() {
   for (const enc of candidates) {
     if (picked.length >= needed) break
     if (picked.some(p => p.id === enc.id)) continue
+    if (enc.denialCode && SKIP_CODES.has(enc.denialCode)) continue
     if (enc.diagnosisCodes.length === 0) continue
     picked.push(enc)
   }

@@ -39,10 +39,10 @@ export function PasscodeGate({ configured }: { configured: boolean }) {
       <div className="w-full max-w-sm">
         <div className="mb-8 flex flex-col items-center text-center">
           <div className="mb-5 flex h-20 w-20 items-center justify-center rounded-3xl bg-white shadow-xl shadow-black/20 ring-1 ring-white/10">
-            <Image src="/logo.png" alt="Yeam.ai" width={52} height={52} className="h-13 w-13 object-contain" />
+            <Image src="/logo.png" alt="Yeam" width={52} height={52} className="h-13 w-13 object-contain" />
           </div>
           <h1 className="text-3xl font-semibold tracking-tight text-white">
-            Yeam<span className="text-teal-300">.ai</span>
+            Yeam
           </h1>
           <p className="mt-2 text-sm text-slate-300">Appeal Letter Review</p>
         </div>

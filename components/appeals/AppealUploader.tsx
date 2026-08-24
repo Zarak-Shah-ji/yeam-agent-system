@@ -1,7 +1,7 @@
 'use client'
 
 import { useRef, useState } from 'react'
-import { FileText, Loader2, Sparkles, Upload, X } from 'lucide-react'
+import { FileText, Loader2, PenLine, Upload, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { LetterActions } from './LetterActions'
@@ -157,7 +157,7 @@ export function AppealUploader() {
             </>
           ) : (
             <>
-              <Sparkles className="mr-2 h-4 w-4" />
+              <PenLine className="mr-2 h-4 w-4" />
               Generate appeal letter
             </>
           )}
