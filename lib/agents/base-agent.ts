@@ -55,24 +55,30 @@ export abstract class BaseAgent implements Agent {
   }
 
   private async logEvent(event: AgentEvent, task: AgentTask, durationMs: number) {
+    const row = {
+      taskId: task.id,
+      agentName: agentNameToPrisma[event.agentName] as Parameters<typeof prisma.agentLog.create>[0]['data']['agentName'],
+      status: agentStatusToPrisma[event.status] as Parameters<typeof prisma.agentLog.create>[0]['data']['status'],
+      intent: task.intent,
+      message: event.message,
+      reasoning: event.reasoning ?? null,
+      confidence: event.confidence ?? null,
+      data: event.data ? (event.data as object) : undefined,
+      sessionId: task.sessionId || null,
+      durationMs,
+    }
+
     try {
-      await prisma.agentLog.create({
-        data: {
-          taskId: task.id,
-          agentName: agentNameToPrisma[event.agentName] as Parameters<typeof prisma.agentLog.create>[0]['data']['agentName'],
-          status: agentStatusToPrisma[event.status] as Parameters<typeof prisma.agentLog.create>[0]['data']['status'],
-          intent: task.intent,
-          message: event.message,
-          reasoning: event.reasoning ?? null,
-          confidence: event.confidence ?? null,
-          data: event.data ? (event.data as object) : undefined,
-          userId: task.userId || null,
-          sessionId: task.sessionId || null,
-          durationMs,
-        },
-      })
+      await prisma.agentLog.create({ data: { ...row, userId: task.userId || null } })
     } catch {
-      // Logging failures should never crash the agent
+      // userId is a foreign key to User. Callers that aren't a signed-in user
+      // (scripts, 'anonymous') would otherwise lose the whole row — including
+      // any generated appeal letter it carries — so retry unattributed.
+      try {
+        await prisma.agentLog.create({ data: { ...row, userId: null } })
+      } catch {
+        // Logging failures should never crash the agent
+      }
     }
   }
 }

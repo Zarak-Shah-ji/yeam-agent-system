@@ -13,7 +13,9 @@
     "db:migrate": "prisma migrate dev",
     "db:seed": "tsx prisma/seed.ts",
     "db:studio": "prisma studio",
-    "db:seed-medicaid": "tsx scripts/load-medicaid-data.ts"
+    "db:seed-medicaid": "tsx scripts/load-medicaid-data.ts",
+    "db:backfill-denials": "tsx scripts/backfill-denial-reasons.ts",
+    "db:seed-appeals": "tsx scripts/seed-showcase-appeals.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.30.0",
@@ -40,12 +42,14 @@
     "csv-parse": "^6.1.0",
     "date-fns": "^3.6.0",
     "lucide-react": "^0.400.0",
+    "mammoth": "^1.12.1",
     "next": "16.1.6",
     "next-auth": "^5.0.0-beta.25",
     "react": "19.2.3",
     "react-dom": "19.2.3",
     "recharts": "^3.7.0",
     "tailwind-merge": "^2.3.0",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
     "zod": "^3.23.0"
   },
   "prisma": {

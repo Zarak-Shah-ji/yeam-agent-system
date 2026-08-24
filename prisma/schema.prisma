@@ -445,6 +445,8 @@ model MedicaidEncounter {
   status          String?  @default("completed")
   claimStatus     String?  @default("clean")
   paidAmount      Decimal? @db.Decimal(12, 2)
+  denialReason    String?
+  denialCode      String?  // CARC/RARC, e.g. "CO-50"
   notes           String?
   patient         MedicaidPatient  @relation(fields: [patientId],   references: [id])
   provider        MedicaidProvider @relation("ServicingEncounterProvider", fields: [providerNpi], references: [npi])
