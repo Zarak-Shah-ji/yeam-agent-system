@@ -2,6 +2,8 @@ import { BaseAgent } from './base-agent'
 import { GEMINI_AVAILABLE, getModel } from './gemini-client'
 import { buildAppealContext } from '@/lib/billing/appeal-context'
 import {
+  ARTIFACT_LABELS,
+  artifactFor,
   buildClaimAppealPrompt,
   stripInstructionalPlaceholders,
   stripPreamble,
@@ -43,6 +45,12 @@ export class BillingAgent extends BaseAgent {
 
     const claimNum = (ctx.claimNumber as string) || 'CLM-XXXX'
 
+    // The denial code decides which document to send, not just what to argue.
+    // A CO-11 diagnosis mismatch gets a corrected claim; CO-50 gets an appeal.
+    const playbook = (ctx.playbook as DenialPlaybook | undefined) ?? null
+    const artifact = artifactFor(playbook)
+    const artifactLabel = ARTIFACT_LABELS[artifact]
+
     // Summary fields persisted alongside the letter so downstream readers (the
     // /appeals review portal) can render a card without re-parsing the prose.
     const patientCtx = ctx.patient as { name?: string; memberId?: string } | undefined
@@ -61,9 +69,15 @@ export class BillingAgent extends BaseAgent {
       daysRemaining: (ctx.daysRemaining as number) ?? null,
       deadlineGovernedBy: (ctx.deadlineGovernedBy as string) || null,
       procedureCode: (ctx.procedure as { code?: string } | undefined)?.code ?? null,
+      // Which instrument this is, so the review portal can label it rather than
+      // calling every generated document an "appeal letter".
+      artifactType: artifact,
+      artifactLabel,
     }
 
     if (!GEMINI_AVAILABLE) {
+      // The stub body below is a generic appeal regardless of denial code, so it
+      // is labelled as one rather than inheriting the resolved artifact.
       yield { taskId: task.id, agentName: this.name, status: 'working', message: 'Drafting appeal letter...', timestamp: new Date() }
       await new Promise(r => setTimeout(r, 400))
 
@@ -103,6 +117,8 @@ Yeam Health Clinic — Billing Department`
         message: `Appeal letter drafted for ${claimNum}.`,
         data: {
           ...summary,
+          artifactType: 'appeal-letter',
+          artifactLabel: 'Appeal letter',
           appealLetter,
           recommendedAction: payerCtx
             ? `Submit via ${payerCtx.submissionChannel} within ${payerCtx.appealWindowDays} days of ${payerCtx.appealWindowFrom}`
@@ -113,15 +129,13 @@ Yeam Health Clinic — Billing Department`
       return
     }
 
-    yield { taskId: task.id, agentName: this.name, status: 'working', message: 'Drafting appeal letter...', timestamp: new Date() }
+    yield { taskId: task.id, agentName: this.name, status: 'working', message: `Drafting ${artifactLabel.toLowerCase()}...`, timestamp: new Date() }
 
-    // The argument comes from the denial code and the voice from the payer, so
-    // the prompt is composed per claim rather than shared across all of them.
+    // The instrument, the argument and the voice all come from the claim: the
+    // denial code picks the document type and the strategy, the payer picks the
+    // register. So the prompt is composed per claim, not shared across them.
     const model = getModel(
-      buildClaimAppealPrompt({
-        payer: payerCtx ?? null,
-        playbook: (ctx.playbook as DenialPlaybook | undefined) ?? null,
-      }),
+      buildClaimAppealPrompt({ payer: payerCtx ?? null, playbook }),
     )
     const result = await model.generateContent({
       contents: [
@@ -129,7 +143,7 @@ Yeam Health Clinic — Billing Department`
           role: 'user',
           parts: [
             {
-              text: `Today's date is ${todayLong()}. Use it as the letter date.\n\nDraft the appeal letter now using this claim context. Output the letter text only — do not ask any questions.\n\n${JSON.stringify(ctx, null, 2)}`,
+              text: `Today's date is ${todayLong()}. Use it as the document date.\n\nDraft the ${artifactLabel.toLowerCase()} now using this claim context. Output the document text only — do not ask any questions.\n\n${JSON.stringify(ctx, null, 2)}`,
             },
           ],
         },
@@ -140,7 +154,7 @@ Yeam Health Clinic — Billing Department`
 
     yield {
       taskId: task.id, agentName: this.name, status: 'complete',
-      message: `Appeal letter drafted for ${claimNum}.`,
+      message: `${artifactLabel} drafted for ${claimNum}.`,
       data: { ...summary, appealLetter },
       confidence: 0.91, reasoning: 'Gemini 2.5 Flash billing', timestamp: new Date(),
     }

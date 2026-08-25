@@ -92,7 +92,7 @@ export async function POST(req: Request) {
   }
 
   // Uploaded files are parsed in memory and discarded — nothing is written to
-  // disk or the database. Only the generated letter is persisted.
+  // disk or the database, and the drafted letter is not retained either.
   let parts: SourcePart[]
   try {
     parts = await Promise.all(files.map(fileToSourcePart))
@@ -119,8 +119,11 @@ export async function POST(req: Request) {
 
   const sourceLabel = files.map(f => f.name).join(', ') || 'pasted notes'
 
-  // Record it the same way BaseAgent records a dashboard-drafted letter, so it
-  // shows up in the showcase list as a genuine system artifact.
+  // Audit row only. Earlier this persisted the drafted letter and the uploaded
+  // filenames; both are derived from a stranger's denial document, this portal
+  // is shared by link, and there is no BAA on this deployment — so neither is
+  // retained. The letter goes back in the response and nowhere else. What stays
+  // is enough to see that the portal was used, and no more.
   await prisma.agentLog
     .create({
       data: {
@@ -128,10 +131,11 @@ export async function POST(req: Request) {
         agentName: 'BILLING',
         status: 'COMPLETE',
         intent: 'draft-appeal',
-        message: `Appeal letter drafted from ${sourceLabel}.`,
+        message: `Letter drafted in the review portal from ${files.length} file(s)${
+          notes ? ' and pasted notes' : ''
+        }.`,
         reasoning: 'Gemini 2.5 Flash billing (appeals review portal)',
         confidence: 0.91,
-        data: { appealLetter: letter, sourceLabel },
         sessionId: PORTAL_SESSION,
       },
     })

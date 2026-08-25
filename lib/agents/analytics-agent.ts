@@ -7,7 +7,7 @@ const SYSTEM_PROMPT = `You are a healthcare analytics AI for Yeam Health Clinic.
 
 When given metrics, you:
 1. Identify key trends and anomalies
-2. Compare against benchmarks (industry denial rate ~8-10%, collection rate ~95%)
+2. Compare against this practice's own recent trend — never against an "industry benchmark". You have no sourced benchmark data, and inventing one is worse than omitting the comparison.
 3. Provide 2-3 specific, actionable recommendations
 4. Keep responses concise (max 4-5 sentences)
 
@@ -45,7 +45,7 @@ export class AnalyticsAgent extends BaseAgent {
       await new Promise(r => setTimeout(r, 500))
       yield {
         taskId: task.id, agentName: this.name, status: 'complete',
-        message: `Metrics: ${metrics.encounters.toLocaleString()} encounters, denial rate ${(metrics.denialRate * 100).toFixed(1)}%, $${metrics.totalCollected.toLocaleString('en-US', { minimumFractionDigits: 2 })} collected. ${metrics.denialRate > 0.1 ? 'Denial rate is above benchmark — review flagged claims.' : 'Denial rate is within benchmark.'}`,
+        message: `Metrics: ${metrics.encounters.toLocaleString()} encounters, denial rate ${(metrics.denialRate * 100).toFixed(1)}%, $${metrics.totalCollected.toLocaleString('en-US', { minimumFractionDigits: 2 })} collected. ${metrics.denialRate > 0.1 ? 'Denial rate is above 10% — review flagged claims.' : ''}`,
         data: {
           encounters: metrics.encounters,
           denied: metrics.denied,

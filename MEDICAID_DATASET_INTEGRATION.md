@@ -11,7 +11,7 @@
 
 ## Context
 
-You are working on **Yeam.ai** (`yeam_agent_system`), an AI-powered EHR system that uses a conversational, agent-driven approach to replace traditional click-heavy EHR interfaces. The primary value proposition is **preventing rejected medical claims** for small/medium healthcare clinics by reducing denial rates from 5-10% down to ~2%.
+You are working on **Yeam.ai** (`yeam_agent_system`), an AI-powered EHR system that uses a conversational, agent-driven approach to replace traditional click-heavy EHR interfaces. The primary value proposition is **preventing rejected medical claims** for small/medium healthcare clinics. (An earlier version of this line promised reducing denial rates "from 5-10% down to ~2%" — that figure was never measured against a cohort and should not be repeated.)
 
 The system uses **Next.js** (App Router) + **PostgreSQL** + **Gemini Pro API**.
 

@@ -7,12 +7,14 @@ export default auth((req) => {
   const { pathname } = req.nextUrl
 
   // Allow public auth pages and auth/debug API routes through.
-  // /appeals is the passcode-gated external review portal — it carries its own
-  // access check (lib/appeals/access.ts) and must not be sent to /login.
+  // /appeals and /how-we-connect are the passcode-gated external review pages —
+  // they carry their own access check (lib/appeals/access.ts), share one
+  // passcode, and must not be sent to /login.
   if (
     pathname.startsWith('/login') ||
     pathname.startsWith('/signup') ||
     pathname.startsWith('/appeals') ||
+    pathname.startsWith('/how-we-connect') ||
     pathname.startsWith('/api/appeals') ||
     pathname.startsWith('/api/auth') ||
     pathname === '/api/healthz'

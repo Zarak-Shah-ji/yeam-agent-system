@@ -4,9 +4,14 @@ import { Check } from 'lucide-react'
 /**
  * Branding for /login and /signup.
  *
- * Copy is taken from the yeam.ai marketing site so the app and the website
- * say the same thing. These are the clinic-facing pillars, deliberately not
+ * Copy tracks the yeam.ai marketing site so the app and the website say the
+ * same thing. These are the clinic-facing pillars, deliberately not
  * feature/tech bullets — someone signing in already owns the product.
+ *
+ * The second pillar used to read "HIPAA + HL7 / Certified and secure". There is
+ * no HL7 in this codebase and no certification behind that word, so it was
+ * replaced with something the product actually does. NOTE: the marketing site
+ * still carries the old wording and needs the same correction.
  *
  * The palette is drawn from logo.png (teal #2DD4BF over deep navy) rather
  * than a generic blue, and the mark sits on a white tile because its darker
@@ -14,7 +19,7 @@ import { Check } from 'lucide-react'
  */
 const PILLARS = [
   { label: 'Live in days', detail: 'Not a months-long rollout' },
-  { label: 'HIPAA + HL7', detail: 'Certified and secure' },
+  { label: 'Reads your denials', detail: 'EOB, ERA, or a claims export' },
   { label: 'Works with your EHR', detail: 'No rip and replace' },
   { label: 'No new hires', detail: 'No overtime, no backfill' },
 ]

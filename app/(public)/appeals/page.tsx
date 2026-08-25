@@ -78,7 +78,10 @@ export default async function AppealsPage() {
         <footer className="mt-14 border-t border-gray-200 pt-6 text-xs text-gray-500">
           <p>
             Demonstration environment. All patient names, member IDs, and claim numbers shown are
-            synthetic test data. Uploaded files are processed in memory and are not stored.
+            synthetic test data. Files you upload are read in memory and never written to disk or
+            the database, and the letter drafted from them is returned to you without being
+            retained — it is not saved and never appears in the list above. This deployment has no
+            BAA in place, so please do not upload documents containing real patient information.
           </p>
         </footer>
       </main>

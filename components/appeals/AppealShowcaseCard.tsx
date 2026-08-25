@@ -17,6 +17,11 @@ function preview(letter: string): string {
   return `${(lastBreak > PREVIEW_CHARS * 0.5 ? slice.slice(0, lastBreak) : slice).trimEnd()}…`
 }
 
+/** A corrected claim is a different instrument from an appeal — colour it differently. */
+const ARTIFACT_VARIANT: Record<string, 'info' | 'secondary'> = {
+  'Appeal letter': 'info',
+}
+
 export function AppealShowcaseCard({ appeal, index }: { appeal: ShowcaseAppeal; index: number }) {
   const [open, setOpen] = useState(index === 0)
 
@@ -35,7 +40,7 @@ export function AppealShowcaseCard({ appeal, index }: { appeal: ShowcaseAppeal; 
     // an appeal that can no longer be filed. The suffix names which clock set
     // the date, since the two are routinely confused.
     [
-      'Appeal deadline',
+      'Filing deadline',
       appeal.appealDeadline && appeal.daysRemaining != null && appeal.daysRemaining > 0
         ? `${appeal.appealDeadline} · ${appeal.daysRemaining} days left${
             appeal.deadlineGovernedBy === 'date-of-service'
@@ -50,8 +55,11 @@ export function AppealShowcaseCard({ appeal, index }: { appeal: ShowcaseAppeal; 
     <article className="overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm">
       <div className="border-b border-gray-100 px-5 py-4">
         <div className="flex flex-wrap items-center gap-2">
-          <h3 className="font-semibold text-gray-900">{appeal.claimNumber ?? 'Appeal letter'}</h3>
+          <h3 className="font-semibold text-gray-900">{appeal.claimNumber ?? appeal.artifactLabel}</h3>
           {appeal.denialCode && <Badge variant="warning">{appeal.denialCode}</Badge>}
+          <Badge variant={ARTIFACT_VARIANT[appeal.artifactLabel] ?? 'secondary'}>
+            {appeal.artifactLabel}
+          </Badge>
         </div>
 
         {fields.length > 0 && (
@@ -85,12 +93,14 @@ export function AppealShowcaseCard({ appeal, index }: { appeal: ShowcaseAppeal; 
             className="inline-flex items-center gap-1 text-sm font-medium text-blue-600 hover:text-blue-700"
           >
             <ChevronDown className={`h-4 w-4 transition-transform ${open ? 'rotate-180' : ''}`} />
-            {open ? 'Show less' : 'Read full letter'}
+            {open ? 'Show less' : `Read full ${appeal.artifactLabel.toLowerCase()}`}
           </button>
           <span className="text-gray-300">·</span>
           <LetterActions
             letter={appeal.letter}
-            filename={`appeal-${(appeal.claimNumber ?? 'letter').replace(/[^a-z0-9-]/gi, '')}.txt`}
+            filename={`${appeal.artifactLabel.toLowerCase().replace(/\s+/g, '-')}-${(
+              appeal.claimNumber ?? 'draft'
+            ).replace(/[^a-z0-9-]/gi, '')}.txt`}
           />
         </div>
       </div>

@@ -5,6 +5,7 @@ import Google from 'next-auth/providers/google'
 import { prisma } from '@/lib/db'
 import bcrypt from 'bcryptjs'
 import { z } from 'zod'
+import { signupAllowed } from '@/lib/signup-access'
 
 const loginSchema = z.object({
   email: z.string().email(),
@@ -30,10 +31,20 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     error: '/login',
   },
   callbacks: {
-    // No signIn gate: "Continue with Google" provisions an account on first use,
-    // from either /login or /signup. The adapter creates the User row, and the
-    // schema defaults new users to role FRONT_DESK. This matches the fact that
-    // /signup already lets anyone self-register with email and password.
+    // Gate account CREATION, not sign-in. Anyone who already has a User row
+    // signs in normally — that keeps the demo logins working. A first-time
+    // address may only provision if it is on the signup allowlist, which
+    // closes the "Continue with Google" auto-provisioning door that used to
+    // let any Google account into the app. See lib/signup-access.ts.
+    async signIn({ user }) {
+      const email = user.email?.toLowerCase()
+      if (!email) return false
+
+      const existing = await prisma.user.findUnique({ where: { email } })
+      if (existing) return true
+
+      return signupAllowed(email)
+    },
     jwt({ token, user }) {
       if (user) {
         token.id = user.id

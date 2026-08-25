@@ -74,7 +74,7 @@ export function Sidebar() {
       {/* Clinic name - only when expanded */}
       {isOpen && (
         <div className="px-4 py-2 text-xs text-gray-500 font-medium truncate">
-          TX Medicaid Dataset
+          Demo environment
         </div>
       )}
 

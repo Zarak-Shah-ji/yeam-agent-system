@@ -76,10 +76,10 @@ export const PLAYBOOKS: Record<string, DenialPlaybook> = {
 
   'CO-18': {
     code: 'CO-18',
-    remedy: 'reconsideration',
+    remedy: 'corrected-claim',
     payerPosition: 'This claim exactly duplicates one already adjudicated.',
     strategy:
-      'Prove distinctness or concede. Identify the ICN of the claim the payer matched against, then show what separates this one: a different date of service, a different rendering provider, a distinct encounter on the same day, or separately reportable units. If the services genuinely were separate encounters on one day, the appropriate modifier (76, 77, or 59/XE) and the times of each encounter carry the argument.',
+      'Check the original claim first — a 276/277 status inquiry establishes whether it actually paid. If it did, the correct action is to close this line, not to submit anything; say so plainly. If the services were genuinely distinct, the remedy is a corrected claim carrying the modifier that makes them distinct (76 for a repeat by the same provider, 77 for a repeat by another provider, 59/XE for a separate encounter), with the times of each encounter stated. Submitting the corrected claim IS the remedy — do not also file an appeal arguing the same point, and escalate to reconsideration only if the corrected claim is denied in turn.',
     evidence: [
       'ICN of the claim alleged to be the original',
       'Documentation showing separate encounters, times, or rendering providers',
@@ -145,9 +145,9 @@ export const PLAYBOOKS: Record<string, DenialPlaybook> = {
     strategy:
       'PR means patient responsibility — a benefit exclusion, not a clinical determination, and the provider generally has no standing to appeal it. Two legitimate paths: verify the exclusion is real by quoting the plan document, and if it is, bill the member provided a valid ABN or member-liability waiver was signed. If the service SHOULD be covered, the argument is contractual — quote the benefit language that covers it. A medical-necessity appeal here has no path to payment.',
     evidence: [
-      'Benefit summary or plan document language covering (or excluding) the service',
+      'The member\'s benefit plan document or Summary of Benefits, with the language covering the service identified by section',
+      'The eligibility and benefits verification record for the date of service — the 270/271 transaction reference, or the payer call reference number and representative name if it was verified by phone',
       'Signed ABN or member liability waiver, if billing the member',
-      'Eligibility verification for the date of service',
     ],
     avoid:
       'Do not appeal on necessity. A non-covered service does not become covered by being necessary, and the letter will be closed without review.',

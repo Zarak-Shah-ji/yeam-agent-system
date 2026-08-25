@@ -16,6 +16,12 @@ export interface ShowcaseAppeal {
   /** 'remittance' or 'date-of-service' — which limit produced the deadline. */
   deadlineGovernedBy: string | null
   procedureCode: string | null
+  /**
+   * Which instrument this document is — appeal letter, corrected claim,
+   * reconsideration, reprocessing request. Older rows predate the distinction
+   * and fall back to an appeal letter.
+   */
+  artifactLabel: string
   letter: string
   createdAt: Date
 }
@@ -108,6 +114,7 @@ export async function listShowcaseAppeals(limit = 5): Promise<ShowcaseAppeal[]> 
       daysRemaining: daysUntil(str(data.appealDeadline)) ?? num(data.daysRemaining),
       deadlineGovernedBy: str(data.deadlineGovernedBy),
       procedureCode: str(data.procedureCode),
+      artifactLabel: str(data.artifactLabel) ?? 'Appeal letter',
       letter,
       createdAt: row.createdAt,
     })
