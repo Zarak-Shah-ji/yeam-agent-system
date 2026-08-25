@@ -32,6 +32,9 @@ const MIN_LETTER_LENGTH = 200
 /** sessionId stamped on letters drafted from a visitor upload in the portal. */
 export const PORTAL_SESSION = 'appeals-portal'
 
+/** sessionId stamped on letters drafted from the public tool on yeam.ai. */
+export const PUBLIC_DEMO_SESSION = 'public-demo'
+
 /**
  * Pull the letter's own "Re:" header apart for rows written before the agent
  * started persisting summary fields alongside the letter.
@@ -83,7 +86,7 @@ export async function listShowcaseAppeals(limit = 5): Promise<ShowcaseAppeal[]> 
     where: {
       agentName: 'BILLING',
       status: 'COMPLETE',
-      NOT: { sessionId: PORTAL_SESSION },
+      NOT: { sessionId: { in: [PORTAL_SESSION, PUBLIC_DEMO_SESSION] } },
     },
     orderBy: { createdAt: 'desc' },
     take: 40,

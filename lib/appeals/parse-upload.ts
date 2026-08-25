@@ -6,6 +6,16 @@ export const MAX_TOTAL_BYTES = 4 * 1024 * 1024
 export const MAX_FILES = 3
 
 /**
+ * Cap the free-text notes field.
+ *
+ * `notes` used to go straight into the model context with no limit anywhere —
+ * a caller could post zero files and a multi-megabyte string and burn tokens
+ * for one request. The file caps above never covered it, because notes is not
+ * a file.
+ */
+export const MAX_NOTES_CHARS = 8_000
+
+/**
  * Formats Gemini reads natively — handed through as inline base64, no parsing.
  * Keys are what a browser might report; values are the canonical type Gemini
  * accepts (browsers sometimes send the non-standard "image/jpg").

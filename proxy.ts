@@ -16,6 +16,7 @@ export default auth((req) => {
     pathname.startsWith('/appeals') ||
     pathname.startsWith('/how-we-connect') ||
     pathname.startsWith('/api/appeals') ||
+    pathname.startsWith('/api/public') ||
     pathname.startsWith('/api/auth') ||
     pathname === '/api/healthz'
   ) {

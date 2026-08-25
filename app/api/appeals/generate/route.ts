@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { hasAppealsAccess } from '@/lib/appeals/access'
 import {
   MAX_FILES,
+  MAX_NOTES_CHARS,
   MAX_TOTAL_BYTES,
   UnsupportedFileError,
   fileToSourcePart,
@@ -79,6 +80,12 @@ export async function POST(req: Request) {
   }
   if (files.length > MAX_FILES) {
     return NextResponse.json({ error: `Attach at most ${MAX_FILES} files.` }, { status: 400 })
+  }
+  if (notes.length > MAX_NOTES_CHARS) {
+    return NextResponse.json(
+      { error: `Those notes are too long — keep them under ${MAX_NOTES_CHARS.toLocaleString()} characters.` },
+      { status: 413 },
+    )
   }
 
   const totalBytes = files.reduce((sum, f) => sum + f.size, 0)
