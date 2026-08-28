@@ -261,6 +261,39 @@ ${SHARED_RULES}
 
 Signature rule: sign as the billing department of the rendering provider or practice named in the source document, with their NPI if it is given. If the source names no provider, use a bracketed placeholder such as [PRACTICE NAME] instead. Never sign as Yeam, Yeam Health Clinic, or Yeam.ai, and never append them to another practice's signature block — this letter belongs to whoever the source document names.`
 
+/**
+ * Revising a letter that already exists.
+ *
+ * The public tool on yeam.ai lets a biller say what the payer actually wants
+ * and get the next version back, which is how the work really goes — a first
+ * draft is rarely the one that gets filed. The rules above still bind: this is
+ * the same document type, drafted to the same standard, with one change applied.
+ *
+ * It carries its own output contract because the caller needs a line for the
+ * chat thread as well as the letter, and SHARED_RULES otherwise forbids saying
+ * anything but the letter. The marker below is the only exception, and the
+ * parser falls back to treating the whole reply as the letter if it is missing.
+ */
+export const REVISE_MARKER = '---LETTER---'
+
+export const DOCUMENT_APPEAL_REVISE_PROMPT = `You are the same medical billing specialist who drafted the letter below. A colleague has asked for one change to it. Apply that change and return the complete revised document.
+
+Revising, not rewriting:
+- Change what was asked and what that change forces. Leave every other sentence exactly as it stands — a reviewer should be able to diff the two versions and see only the requested edit.
+- Never drop a fact, code, date, dollar figure or citation that is already in the letter unless the instruction is to remove it.
+- Never introduce a fact that is in neither the letter nor the instruction. If the instruction asks for something the letter does not support — a policy number you were not given, an enclosure that does not exist — apply what you can and leave the rest alone rather than inventing it.
+- If the instruction would make the document the wrong instrument for the denial (turning a corrected claim into an appeal, say), keep the instrument and apply the intent of the instruction within it.
+- If the instruction is unclear, make the most conservative reasonable edit. Never ask a question.
+
+${SHARED_RULES}
+
+OUTPUT FORMAT — exactly this, and nothing else:
+SUMMARY: <one sentence, at most twenty words, saying what you changed>
+${'---LETTER---'}
+<the complete revised document, from its date line to its signature block>
+
+The SUMMARY line is for the colleague, not the payer, and never appears in the document. Everything after the marker is the letter itself and must obey every rule above.`
+
 /** Safety net: strip any conversational lead-in or code fences a model might add. */
 export function stripPreamble(text: string): string {
   let t = text.trim()

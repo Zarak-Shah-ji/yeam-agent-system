@@ -1,5 +1,5 @@
-import { timingSafeEqual } from 'crypto'
 import { NextResponse } from 'next/server'
+import { secretMatches } from '@/lib/appeals/demo-auth'
 import {
   MAX_FILES,
   MAX_NOTES_CHARS,
@@ -31,21 +31,6 @@ export const maxDuration = 60
 
 /** Keeps public-demo letters out of the curated /appeals showcase list. */
 const PUBLIC_DEMO_SESSION = 'public-demo'
-
-/** Constant-time compare that tolerates length mismatch without leaking it. */
-function secretMatches(presented: string | null): boolean {
-  const expected = process.env.PUBLIC_DEMO_SECRET
-  if (!expected || !presented) return false
-
-  const a = Buffer.from(presented)
-  const b = Buffer.from(expected)
-  if (a.length !== b.length) {
-    // Burn a comparison so a wrong length isn't faster than a wrong value.
-    timingSafeEqual(b, b)
-    return false
-  }
-  return timingSafeEqual(a, b)
-}
 
 export async function POST(req: Request) {
   if (!process.env.PUBLIC_DEMO_SECRET) {
