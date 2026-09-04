@@ -115,6 +115,17 @@ export function InsightsView() {
 
   return (
     <div className="space-y-5">
+      {data?.truncated && (
+        <p className="flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+          <span>
+            This workspace holds more rows than one view reads at once, so every total below is a
+            floor rather than a total. Filter to a narrower date range, or get in touch and
+            we&rsquo;ll raise the ceiling.
+          </span>
+        </p>
+      )}
+
       {claims?.statusDerived && (
         <p className="flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
