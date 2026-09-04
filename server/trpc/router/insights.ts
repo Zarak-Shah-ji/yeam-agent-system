@@ -2,6 +2,11 @@ import { z } from 'zod'
 import { router, orgProcedure } from '../trpc'
 import { money } from '@/lib/money'
 import {
+  latestClaimsBatch as factsLatestClaimsBatch,
+  loadFacts as factsLoadFacts,
+  type Facts,
+} from '@/lib/insights/facts'
+import {
   arAging,
   denialTrend,
   overview,
@@ -41,69 +46,11 @@ const CLAIM_STATUSES = [
   'UNKNOWN',
 ] as const
 
-type ClaimRecordFromDb = {
-  claimNumber: string | null
-  payer: string | null
-  status: string
-  billed: unknown
-  allowed: unknown
-  paid: unknown
-  patientResp: unknown
-  adjustment: unknown
-  serviceDate: Date | null
-  submittedDate: Date | null
-  remitDate: Date | null
-  cpt: string | null
-  icd10: string | null
-  carc: string | null
+type Ctx = {
+  prisma: import('@prisma/client').PrismaClient
+  orgId: string
+  once: import('../context').Memo
 }
-
-function toClaimFact(row: ClaimRecordFromDb): ClaimFact {
-  return {
-    claimNumber: row.claimNumber,
-    payer: row.payer,
-    status: row.status as ClaimStatus,
-    billed: money(row.billed),
-    allowed: row.allowed === null ? null : money(row.allowed),
-    paid: row.paid === null ? null : money(row.paid),
-    patientResp: row.patientResp === null ? null : money(row.patientResp),
-    adjustment: row.adjustment === null ? null : money(row.adjustment),
-    serviceDate: row.serviceDate,
-    submittedDate: row.submittedDate,
-    remitDate: row.remitDate,
-    cpt: row.cpt,
-    icd10: row.icd10,
-    carc: row.carc,
-  }
-}
-
-type DenialRowFromDb = {
-  claimNumber: string | null
-  payer: string | null
-  carc: string
-  billed: unknown
-  denialDate: Date | null
-  cpt: string | null
-  icd10: string | null
-  reason: string | null
-  status: string
-}
-
-function toDenialFact(row: DenialRowFromDb): DenialFact {
-  return {
-    claimNumber: row.claimNumber ?? undefined,
-    payer: row.payer ?? undefined,
-    carc: row.carc,
-    billed: money(row.billed),
-    denialDate: row.denialDate,
-    cpt: row.cpt ?? undefined,
-    icd10: row.icd10 ?? undefined,
-    reason: row.reason ?? undefined,
-    status: row.status,
-  }
-}
-
-type Ctx = { prisma: import('@prisma/client').PrismaClient; orgId: string }
 
 /** One row of the claims table. Named so the empty branch types identically. */
 type ClaimListItem = {
@@ -124,36 +71,24 @@ type ClaimListItem = {
   worklistRowId: string | null
 }
 
-/** The most recent claims snapshot, if the workspace has one. */
-async function latestClaimsBatch(ctx: Ctx) {
-  return ctx.prisma.importBatch.findFirst({
-    where: { orgId: ctx.orgId, kind: 'CLAIMS' },
-    orderBy: { createdAt: 'desc' },
-  })
+/**
+ * Both halves of the picture, loaded once per request.
+ *
+ * The loader itself lives in lib/insights/facts.ts so the chat agent reads the
+ * workspace through the identical query. These wrappers exist only to unpack
+ * the tRPC context.
+ *
+ * `loadFacts` is memoized on the request context, which matters more than it
+ * looks: the Analytics page fires seven queries, six of them land here, and
+ * httpBatchLink delivers all seven as ONE request. Without the memo that is six
+ * full loads of the customer's A/R to render one page.
+ */
+function latestClaimsBatch(ctx: Ctx) {
+  return factsLatestClaimsBatch(ctx.prisma, ctx.orgId)
 }
 
-/**
- * Both halves of the picture, loaded once.
- *
- * Every aggregate needs the same two collections, so they are fetched together
- * rather than each procedure issuing its own pair of queries.
- */
-async function loadFacts(ctx: Ctx) {
-  const batch = await latestClaimsBatch(ctx)
-
-  const [claimRows, denialRows] = await Promise.all([
-    batch
-      ? ctx.prisma.orgClaim.findMany({ where: { orgId: ctx.orgId, batchId: batch.id } })
-      : Promise.resolve([]),
-    ctx.prisma.denialRow.findMany({ where: { orgId: ctx.orgId } }),
-  ])
-
-  return {
-    batch,
-    claims: claimRows.map(toClaimFact),
-    denials: denialRows.map(toDenialFact),
-    statusDerived: batch?.statusDerived ?? false,
-  }
+function loadFacts(ctx: Ctx): Promise<Facts> {
+  return ctx.once('insights:facts', () => factsLoadFacts(ctx.prisma, ctx.orgId))
 }
 
 export const insightsRouter = router({
@@ -187,11 +122,15 @@ export const insightsRouter = router({
   }),
 
   overview: orgProcedure.query(async ({ ctx }) => {
-    const { claims, denials, statusDerived, batch } = await loadFacts(ctx)
+    const { claims, denials, statusDerived, batch, truncated } = await loadFacts(ctx)
     return {
       ...overview(claims, denials, new Date(), { statusDerived }),
       snapshotAt: batch?.createdAt ?? null,
       snapshotFilename: batch?.filename ?? null,
+      // Every total above is a floor when this is true. Surfaced rather than
+      // swallowed: a silently partial revenue figure is worse than a labelled
+      // one. See FACT_ROW_CAP in lib/insights/facts.ts.
+      truncated,
     }
   }),
 
@@ -251,8 +190,8 @@ export const insightsRouter = router({
   }),
 
   recovery: orgProcedure.query(async ({ ctx }) => {
-    const denials = await ctx.prisma.denialRow.findMany({ where: { orgId: ctx.orgId } })
-    return recoveryFunnel(denials.map(toDenialFact))
+    const { denials } = await loadFacts(ctx)
+    return recoveryFunnel(denials)
   }),
 
   /** Distinct payer names in the snapshot, for the claims table filter. */

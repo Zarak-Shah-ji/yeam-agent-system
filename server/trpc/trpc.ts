@@ -40,14 +40,20 @@ export const orgProcedure = protectedProcedure.use(async ({ ctx, next }) => {
     throw new TRPCError({ code: 'UNAUTHORIZED' })
   }
 
-  const user = await ctx.prisma.user.findUnique({
-    where: { id: userId },
-    select: { orgId: true },
-  })
+  // Memoized: every procedure in a batched request would otherwise repeat this
+  // same lookup. See server/trpc/context.ts.
+  const user = await ctx.once(`org:${userId}`, () =>
+    ctx.prisma.user.findUnique({
+      where: { id: userId },
+      select: { orgId: true },
+    }),
+  )
 
   if (!user?.orgId) {
-    // The seeded demo logins land here. They can still browse the sample
-    // practice; they have no workspace of their own to read.
+    // Accounts created before organizations existed land here. There is nothing
+    // for them to read: the sample practice lives inside a workspace too, so a
+    // user without one has no data of any kind. Backfill an org rather than
+    // relaxing this. See lib/org.ts.
     throw new TRPCError({
       code: 'FORBIDDEN',
       message: 'This account is not part of a workspace yet.',

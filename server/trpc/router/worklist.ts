@@ -5,6 +5,7 @@ import { triage, triageRow, type ClaimRow } from '@/lib/denials/triage'
 import { refineDenial } from '@/lib/denials/rarc'
 import { callGuidance, scoreRow } from '@/lib/denials/score'
 import { payerOf, payerTurnaround } from '@/lib/insights/aggregate'
+import { FACT_ROW_CAP } from '@/lib/insights/facts'
 import { draftResponseForRow } from '@/lib/denials/draft-response'
 import { reviseAppealLetter } from '@/lib/billing/revise-appeal'
 import { money } from '@/lib/money'
@@ -48,29 +49,34 @@ type PersistedRow = {
  * Selects the five columns the median actually needs. A worklist request has no
  * business loading every dollar column of an A/R snapshot.
  */
-async function payerMedians(ctx: {
+function payerMedians(ctx: {
   prisma: import('@prisma/client').PrismaClient
   orgId: string
+  once: import('../context').Memo
 }): Promise<Map<string, number>> {
-  const batch = await ctx.prisma.importBatch.findFirst({
-    where: { orgId: ctx.orgId, kind: 'CLAIMS' },
-    orderBy: { createdAt: 'desc' },
-    select: { id: true },
-  })
-  if (!batch) return new Map()
+  // summary and rows both want this and arrive in the same batched request.
+  return ctx.once('worklist:payerMedians', async () => {
+    const batch = await ctx.prisma.importBatch.findFirst({
+      where: { orgId: ctx.orgId, kind: 'CLAIMS' },
+      orderBy: { createdAt: 'desc' },
+      select: { id: true },
+    })
+    if (!batch) return new Map<string, number>()
 
-  const claims = await ctx.prisma.orgClaim.findMany({
-    where: { orgId: ctx.orgId, batchId: batch.id },
-    select: {
-      payer: true,
-      status: true,
-      serviceDate: true,
-      submittedDate: true,
-      remitDate: true,
-    },
-  })
+    const claims = await ctx.prisma.orgClaim.findMany({
+      where: { orgId: ctx.orgId, batchId: batch.id },
+      select: {
+        payer: true,
+        status: true,
+        serviceDate: true,
+        submittedDate: true,
+        remitDate: true,
+      },
+      take: FACT_ROW_CAP,
+    })
 
-  return payerTurnaround(claims)
+    return payerTurnaround(claims)
+  })
 }
 
 function toClaimRow(row: PersistedRow): ClaimRow {
@@ -92,14 +98,20 @@ export const worklistRouter = router({
     const today = new Date()
 
     const [rows, settled, followUpsDue] = await Promise.all([
+      // Capped, not paginated: the bands below are derived per row, so there is
+      // no SQL predicate that could select "the interesting ones" up front.
       ctx.prisma.denialRow.findMany({
         where: { orgId: ctx.orgId, status: { notIn: ['PAID', 'DEAD'] } },
+        take: FACT_ROW_CAP,
       }),
       // Recovered money is the only number a customer will check against their
-      // bank, so it counts nothing but rows a human marked PAID.
-      ctx.prisma.denialRow.findMany({
+      // bank, so it counts nothing but rows a human marked PAID. A sum and a
+      // count are all this needs — it used to load every paid row to add them
+      // up in JS, which grows without bound and forever.
+      ctx.prisma.denialRow.aggregate({
         where: { orgId: ctx.orgId, status: 'PAID' },
-        select: { billed: true },
+        _sum: { billed: true },
+        _count: true,
       }),
       ctx.prisma.denialRow.count({
         where: {
@@ -110,7 +122,8 @@ export const worklistRouter = router({
       }),
     ])
 
-    const worklist = triage(rows.map(toClaimRow), today)
+    const claimRows = rows.map(toClaimRow)
+    const worklist = triage(claimRows, today)
 
     // Band counts come from the same scorer the table sorts by, so the tile and
     // the queue can never disagree about what "work now" means.
@@ -125,8 +138,8 @@ export const worklistRouter = router({
     let workNowBilled = 0
     let needsAttention = 0
     let needsAttentionBilled = 0
-    for (const row of rows) {
-      const base = triageRow(toClaimRow(row), today)
+    for (const [i, row] of rows.entries()) {
+      const base = triageRow(claimRows[i], today)
       const scored = scoreRow(
         {
           billed: base.billed,
@@ -164,9 +177,8 @@ export const worklistRouter = router({
       needsAttention,
       needsAttentionBilled: Math.round(needsAttentionBilled * 100) / 100,
       followUpsDue,
-      recovered:
-        Math.round(settled.reduce((sum, r) => sum + money(r.billed), 0) * 100) / 100,
-      recoveredCount: settled.length,
+      recovered: Math.round(money(settled._sum.billed) * 100) / 100,
+      recoveredCount: settled._count,
     }
   }),
 
@@ -205,6 +217,7 @@ export const worklistRouter = router({
             ...(input?.status ? { status: input.status } : {}),
           },
           include: { _count: { select: { drafts: true } } },
+          take: FACT_ROW_CAP,
         }),
         payerMedians(ctx),
       ])
