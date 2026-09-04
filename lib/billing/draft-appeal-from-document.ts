@@ -1,4 +1,4 @@
-import { GEMINI_AVAILABLE, getModel } from '@/lib/agents/gemini-client'
+import { GEMINI_AVAILABLE, getModel } from '@/lib/ai/gemini-client'
 import { DOCUMENT_APPEAL_SYSTEM_PROMPT, stripPreamble, todayLong } from './appeal-prompt'
 
 /** A chunk of source material handed to the model: extracted text or a raw file. */

@@ -1,347 +1,49 @@
 import { NextRequest } from 'next/server'
-import { SchemaType, type Content, type Part, type FunctionDeclarationsTool } from '@google/generative-ai'
-import { type Prisma } from '@prisma/client'
-import { auth } from '@/lib/auth'
+import type { Content, Part } from '@google/generative-ai'
 import { prisma } from '@/lib/db'
-import { GEMINI_AVAILABLE, getFlashModel, getProModel } from '@/lib/agents/gemini-client'
-import { medicaidFunctionDeclarations } from '@/lib/ai/medicaid-tools'
-import { executeMedicaidFunction } from '@/lib/ai/tool-executor'
-import { startOfDay, endOfDay } from 'date-fns'
+import { requireOrg } from '@/lib/org'
+import { GEMINI_AVAILABLE, getModel } from '@/lib/ai/gemini-client'
+import {
+  executeWorkspaceTool,
+  isWorkspaceTool,
+  resultCount,
+  workspaceTools,
+} from '@/lib/ai/workspace-tools'
 
 export const runtime = 'nodejs'
 
-// ─── Agent routing ────────────────────────────────────────────────────────────
+/**
+ * Ask the workspace a question.
+ *
+ * This used to route between five personas — Front Desk, Clinical Documentation,
+ * Claim Scrubber, Billing, Analytics — over the seeded EHR and the statewide
+ * Medicaid dataset. Four of those describe a product that no longer exists, the
+ * routing cost a model round-trip per message to pick between them, and none of
+ * the tools filtered by organization.
+ *
+ * One assistant now, over the customer's own denials and A/R, through
+ * lib/ai/workspace-tools.ts. Dropping the classifier also removes a whole class
+ * of failure where a question got routed to a persona whose tools could not
+ * answer it.
+ */
 
-type AgentName = 'front-desk' | 'clinical-doc' | 'claim-scrubber' | 'billing' | 'analytics'
+/** Purple, labelled "Billing" in the UI. The client keys colours off this. */
+const AGENT_NAME = 'billing'
 
-const AGENT_LABELS: Record<AgentName, string> = {
-  'front-desk': 'Front Desk',
-  'clinical-doc': 'Clinical Documentation',
-  'claim-scrubber': 'Claim Scrubber',
-  'billing': 'Billing',
-  'analytics': 'Analytics',
-}
+const SYSTEM_PROMPT = `You are the billing assistant inside Yeam, a denial-management tool used by medical billing teams.
 
-const PRISMA_AGENT_NAME: Record<AgentName, string> = {
-  'front-desk': 'FRONT_DESK',
-  'clinical-doc': 'CLINICAL_DOC',
-  'claim-scrubber': 'CLAIM_SCRUBBER',
-  'billing': 'BILLING',
-  'analytics': 'ANALYTICS',
-}
+You answer questions about THIS workspace's own data — the denials and claims its owners uploaded. You have three tools:
+- workspace_overview — billed, paid, outstanding, denial rate, collection rate, amount at stake and amount recovered
+- top_denial_reasons — denial reasons ranked by money, with the CARC code, what it means and the remedy that applies
+- worklist_rows — individual denials in priority order, optionally filtered by payer
 
-const SYSTEM_PROMPTS: Record<AgentName, string> = {
-  'front-desk': `You are the Front Desk Agent for Yeam Health Clinic. Help staff with patient check-ins, appointment scheduling and cancellations, insurance verification, and patient lookups. Be concise and professional. Use the available tools to look up real data. When cancelling appointments via the tool, confirm the action with the staff member first.`,
-
-  'clinical-doc': `You are the Clinical Documentation Agent for Yeam Health Clinic. Assist providers with SOAP note documentation, encounter lookups, ICD-10 diagnosis coding, and CPT procedure coding. Be precise and clinically accurate. Use tools to look up patient encounters and claims.`,
-
-  'claim-scrubber': `You are the Claim Scrubbing Agent for Yeam Health Clinic. Validate insurance claims for accuracy, check ICD-10/CPT code combinations, verify claim status, and identify billing errors. Use the available tools to look up real claim data.`,
-
-  'billing': `You are the Billing Agent for Yeam Health Clinic. Handle denied claims, advise on appeal strategies, track payments, and support revenue cycle operations. Use claim_lookup to find denied or pending claims and advise on next steps.`,
-
-  'analytics': `You are the Analytics Agent for Yeam Health Clinic. You MUST always call a tool before responding — never answer data questions from memory. You have access to two data sources:
-
-1. Clinic EHR data → use metrics_query (denial_rate, revenue, claims_count)
-2. Statewide Texas Medicaid data (11M+ claims, 2018-2024) → use:
-   - search_providers: find top billers in a city (pass city + sort_by="total_claims"), search by name/NPI
-   - get_provider_analytics: full billing profile for a provider NPI
-   - get_procedure_info: description + average TX cost for any HCPCS/CPT code
-   - detect_anomalies: flag cost outliers and volume spikes for a provider
-   - get_medicaid_dashboard: system-wide totals and denial rate
-
-Examples of what to call:
-- "top billers in Houston" → search_providers(city="Houston", sort_by="total_claims", limit=10)
-- "what does 99213 cost" → get_procedure_info(code="99213")
-- "anomalies for NPI 1790721538" → detect_anomalies(npi="1790721538")
-- "dashboard overview" → get_medicaid_dashboard()`,
-}
-
-const CLASSIFY_PROMPT = `You are an intent router for a medical clinic EHR system.
-Given a staff message, respond with ONLY one of these agent names — no punctuation, no explanation:
-
-front-desk   → patient check-in, appointment scheduling/cancellation, patient lookup, registration, insurance verification, room assignments
-clinical-doc → SOAP notes, encounter documentation, ICD-10/CPT coding, clinical questions
-claim-scrubber → claim validation, scrubbing, status checks, billing code review
-billing      → denied claims, payments, appeals, outstanding balances, revenue cycle
-analytics    → reports, metrics, denial rates, revenue statistics, trends, Medicaid provider analysis, statewide billing data, procedure code costs, provider anomalies, top billers
-
-Message: `
-
-// ─── Gemini function tools ────────────────────────────────────────────────────
-
-const TOOLS: FunctionDeclarationsTool[] = [{
-  functionDeclarations: [
-    ...medicaidFunctionDeclarations,
-    {
-      name: 'patient_lookup',
-      description: 'Look up a patient by name or MRN. Returns matching patient records.',
-      parameters: {
-        type: SchemaType.OBJECT,
-        properties: {
-          query: { type: SchemaType.STRING, description: 'Patient name or MRN to search for' },
-        },
-        required: ['query'],
-      },
-    },
-    {
-      name: 'appointment_list',
-      description: 'List appointments, optionally filtered by date or patient ID.',
-      parameters: {
-        type: SchemaType.OBJECT,
-        properties: {
-          date: { type: SchemaType.STRING, description: 'Date in YYYY-MM-DD format' },
-          patient_id: { type: SchemaType.STRING, description: 'Patient ID to filter by' },
-        },
-      },
-    },
-    {
-      name: 'appointment_cancel',
-      description: 'Cancel a scheduled appointment. Only works on SCHEDULED appointments.',
-      parameters: {
-        type: SchemaType.OBJECT,
-        properties: {
-          appointment_id: { type: SchemaType.STRING, description: 'The appointment ID to cancel' },
-          reason: { type: SchemaType.STRING, description: 'Reason for cancellation (e.g. Patient Request, No Show, Other)' },
-        },
-        required: ['appointment_id', 'reason'],
-      },
-    },
-    {
-      name: 'insurance_verify',
-      description: 'Check insurance coverage status and plan details for a patient.',
-      parameters: {
-        type: SchemaType.OBJECT,
-        properties: {
-          patient_id: { type: SchemaType.STRING, description: 'The patient ID to check coverage for' },
-        },
-        required: ['patient_id'],
-      },
-    },
-    {
-      name: 'claim_lookup',
-      description: 'Look up claims filtered by status and/or patient.',
-      parameters: {
-        type: SchemaType.OBJECT,
-        properties: {
-          status: { type: SchemaType.STRING, description: 'Claim status: PENDING, SUBMITTED, DENIED, PAID, APPEALED, etc.' },
-          patient_id: { type: SchemaType.STRING, description: 'Patient ID to filter by' },
-        },
-      },
-    },
-    {
-      name: 'metrics_query',
-      description: 'Run analytics queries for clinic metrics like denial rate, revenue, and claims count.',
-      parameters: {
-        type: SchemaType.OBJECT,
-        properties: {
-          metric: { type: SchemaType.STRING, description: 'Metric to query: denial_rate, revenue, or claims_count' },
-          period: { type: SchemaType.STRING, description: 'Time period: today, this_week, or this_month (default: this_month)' },
-        },
-        required: ['metric'],
-      },
-    },
-  ],
-}]
-
-// ─── Function execution ───────────────────────────────────────────────────────
-
-async function executeFunction(name: string, args: Record<string, unknown>): Promise<unknown> {
-  switch (name) {
-    case 'patient_lookup': {
-      const query = String(args.query ?? '').trim()
-      const patients = await prisma.patient.findMany({
-        where: {
-          OR: [
-            { firstName: { contains: query, mode: 'insensitive' } },
-            { lastName: { contains: query, mode: 'insensitive' } },
-            { mrn: { equals: query } },
-          ],
-        },
-        select: {
-          id: true, firstName: true, lastName: true, mrn: true,
-          dateOfBirth: true, phone: true, email: true, active: true,
-        },
-        take: 5,
-      })
-      return {
-        patients: patients.map(p => ({
-          ...p,
-          dateOfBirth: p.dateOfBirth.toISOString().split('T')[0],
-        })),
-        total: patients.length,
-      }
-    }
-
-    case 'appointment_list': {
-      const date = args.date as string | undefined
-      const patientId = args.patient_id as string | undefined
-
-      const where: Prisma.AppointmentWhereInput = {}
-      if (date) {
-        const d = new Date(date + 'T00:00:00')
-        where.scheduledAt = { gte: startOfDay(d), lte: endOfDay(d) }
-      }
-      if (patientId) where.patientId = patientId
-
-      const appointments = await prisma.appointment.findMany({
-        where,
-        include: {
-          patient: { select: { firstName: true, lastName: true, mrn: true } },
-          provider: { select: { firstName: true, lastName: true, credential: true } },
-        },
-        orderBy: { scheduledAt: 'asc' },
-        take: 20,
-      })
-      return {
-        appointments: appointments.map(a => ({
-          id: a.id,
-          patient: `${a.patient.firstName} ${a.patient.lastName} (${a.patient.mrn})`,
-          provider: `${a.provider.firstName} ${a.provider.lastName}${a.provider.credential ? `, ${a.provider.credential}` : ''}`,
-          scheduledAt: a.scheduledAt.toISOString(),
-          status: a.status,
-          appointmentType: a.appointmentType ?? 'unspecified',
-          chiefComplaint: a.chiefComplaint ?? null,
-        })),
-        total: appointments.length,
-      }
-    }
-
-    case 'appointment_cancel': {
-      const appointmentId = String(args.appointment_id ?? '').trim()
-      const reason = String(args.reason ?? 'Other').trim()
-
-      const appt = await prisma.appointment.findUnique({ where: { id: appointmentId } })
-      if (!appt) return { success: false, error: 'Appointment not found.' }
-      if (appt.status !== 'SCHEDULED')
-        return { success: false, error: `Cannot cancel — appointment is already ${appt.status}.` }
-
-      await prisma.appointment.update({
-        where: { id: appointmentId },
-        data: { status: 'CANCELLED', cancelledAt: new Date(), cancellationReason: reason },
-      })
-      return { success: true, message: `Appointment ${appointmentId} cancelled. Reason: ${reason}` }
-    }
-
-    case 'insurance_verify': {
-      const patientId = String(args.patient_id ?? '').trim()
-      const coverages = await prisma.insuranceCoverage.findMany({
-        where: { patientId, active: true },
-        include: { payer: { select: { name: true, planType: true } } },
-        orderBy: { isPrimary: 'desc' },
-      })
-      return {
-        coverages: coverages.map(c => ({
-          payer: c.payer.name,
-          planType: c.payer.planType,
-          memberId: c.memberId,
-          groupNumber: c.groupNumber,
-          planName: c.planName,
-          isPrimary: c.isPrimary,
-          effectiveDate: c.effectiveDate.toISOString().split('T')[0],
-          terminationDate: c.terminationDate?.toISOString().split('T')[0] ?? null,
-          copay: c.copay?.toNumber() ?? null,
-          deductible: c.deductible?.toNumber() ?? null,
-          deductibleMet: c.deductibleMet?.toNumber() ?? null,
-        })),
-        total: coverages.length,
-      }
-    }
-
-    case 'claim_lookup': {
-      const status = args.status as string | undefined
-      const patientId = args.patient_id as string | undefined
-
-      const claims = await prisma.claim.findMany({
-        where: {
-          ...(status ? { status: status as Prisma.EnumClaimStatusFilter } : {}),
-          ...(patientId ? { patientId } : {}),
-        },
-        include: {
-          patient: { select: { firstName: true, lastName: true, mrn: true } },
-          payer: { select: { name: true } },
-        },
-        orderBy: { serviceDate: 'desc' },
-        take: 10,
-      })
-      return {
-        claims: claims.map(c => ({
-          id: c.id,
-          claimNumber: c.claimNumber,
-          patient: `${c.patient.firstName} ${c.patient.lastName} (${c.patient.mrn})`,
-          payer: c.payer.name,
-          status: c.status,
-          totalCharge: c.totalCharge.toNumber(),
-          paidAmount: c.paidAmount?.toNumber() ?? null,
-          serviceDate: c.serviceDate.toISOString().split('T')[0],
-          denialReason: c.denialReason ?? null,
-        })),
-        total: claims.length,
-      }
-    }
-
-    case 'metrics_query': {
-      const metric = String(args.metric ?? '').trim()
-      const period = String(args.period ?? 'this_month').trim()
-
-      const now = new Date()
-      let startDate: Date
-      if (period === 'today') startDate = startOfDay(now)
-      else if (period === 'this_week') startDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000)
-      else startDate = new Date(now.getFullYear(), now.getMonth(), 1)
-
-      if (metric === 'denial_rate') {
-        const [total, denied] = await Promise.all([
-          prisma.claim.count({ where: { serviceDate: { gte: startDate } } }),
-          prisma.claim.count({ where: { serviceDate: { gte: startDate }, status: 'DENIED' } }),
-        ])
-        return {
-          metric: 'denial_rate', period,
-          value: total > 0 ? `${(denied / total * 100).toFixed(1)}%` : '0%',
-          denied, total,
-        }
-      }
-
-      if (metric === 'revenue') {
-        const result = await prisma.claim.aggregate({
-          where: { serviceDate: { gte: startDate }, status: 'PAID' },
-          _sum: { paidAmount: true },
-          _count: true,
-        })
-        const amount = result._sum.paidAmount?.toNumber() ?? 0
-        return {
-          metric: 'revenue', period,
-          value: `$${amount.toLocaleString('en-US', { minimumFractionDigits: 2 })}`,
-          claimCount: result._count,
-        }
-      }
-
-      if (metric === 'claims_count') {
-        const grouped = await prisma.claim.groupBy({
-          by: ['status'],
-          where: { serviceDate: { gte: startDate } },
-          _count: true,
-        })
-        const total = grouped.reduce((sum, g) => sum + g._count, 0)
-        return {
-          metric: 'claims_count', period,
-          total,
-          breakdown: grouped.map(g => ({ status: g.status, count: g._count })),
-        }
-      }
-
-      return { error: `Unknown metric "${metric}". Supported: denial_rate, revenue, claims_count` }
-    }
-
-    default: {
-      // Fall through to Medicaid tool executor
-      const medicaidResult = await executeMedicaidFunction(name, args)
-      if (medicaidResult !== null) return medicaidResult
-      return { error: `Unknown function: ${name}` }
-    }
-  }
-}
-
-// ─── SSE helpers ──────────────────────────────────────────────────────────────
+Rules:
+- ALWAYS call a tool before answering a question about numbers, denials or claims. Never answer from memory and never estimate.
+- Report what the tools return. If a tool comes back empty, say the workspace has no such data yet and suggest importing a file on the Connect data page — do not invent an example.
+- If a result is marked partial, say the totals are a floor, not a total.
+- The data is de-identified by design: there are no patient names, member IDs or dates of birth, and you cannot look a patient up. Say so plainly if asked.
+- You can read but not change anything. If asked to mark a row worked, send an appeal or edit a claim, explain that it has to be done on the Worklist page.
+- Money in US dollars. Be brief and concrete — a biller wants the number and the next action, not a preamble.`
 
 type SSEEvent =
   | { type: 'routing'; message: string }
@@ -352,11 +54,13 @@ type SSEEvent =
   | { type: 'done'; agentName: string }
   | { type: 'error'; message: string }
 
-// ─── Route handler ────────────────────────────────────────────────────────────
-
 export async function POST(req: NextRequest) {
-  const session = await auth()
-  if (!session?.user) return new Response('Unauthorized', { status: 401 })
+  // Resolves the caller's workspace and refuses when there isn't one. Every
+  // tool below is scoped by this orgId and by nothing the model supplies.
+  const org = await requireOrg()
+  if (!org) {
+    return new Response('This account is not part of a workspace yet.', { status: 403 })
+  }
 
   let body: { message?: string; history?: Array<{ role: string; content: string }> }
   try { body = await req.json() }
@@ -365,7 +69,7 @@ export async function POST(req: NextRequest) {
   const message = body.message?.trim()
   if (!message) return new Response('Missing message', { status: 400 })
 
-  // Guard: cap message + history size to prevent API cost abuse
+  // Cap message + history size to keep one caller from running up the API bill.
   if (message.length > 2000) {
     return new Response('Message too long (max 2000 chars)', { status: 400 })
   }
@@ -389,77 +93,55 @@ export async function POST(req: NextRequest) {
           return
         }
 
-        // ── Step 1: Classify intent ──
-        send({ type: 'routing', message: '🔍 Routing request...' })
-        const flash = getFlashModel()
-        const classifyResult = await flash.generateContent({
-          contents: [{ role: 'user', parts: [{ text: CLASSIFY_PROMPT + message }] }],
-        })
-        const classified = classifyResult.response.text().trim().toLowerCase()
-        const validAgents: AgentName[] = ['front-desk', 'clinical-doc', 'claim-scrubber', 'billing', 'analytics']
-        const agentName: AgentName = validAgents.includes(classified as AgentName)
-          ? (classified as AgentName)
-          : 'front-desk'
-        const agentLabel = AGENT_LABELS[agentName]
+        send({ type: 'agent', name: AGENT_NAME, message: 'Reading your workspace...' })
 
-        send({ type: 'agent', name: agentName, message: `${agentLabel} Agent is thinking...` })
-
-        // ── Step 2: Build conversation history ──
-        const geminiHistory: Content[] = history.map(h => ({
-          role: h.role === 'assistant' ? 'model' : 'user',
-          parts: [{ text: h.content }],
-        }))
         const contents: Content[] = [
-          ...geminiHistory,
+          ...history.map<Content>(h => ({
+            role: h.role === 'assistant' ? 'model' : 'user',
+            parts: [{ text: h.content }],
+          })),
           { role: 'user', parts: [{ text: message }] },
         ]
 
-        // ── Step 3: Pro model with function calling ──
-        const model = getProModel(SYSTEM_PROMPTS[agentName])
-        const firstResult = await model.generateContent({ contents, tools: TOOLS })
-        const firstResponse = firstResult.response
-        const firstParts = firstResponse.candidates?.[0]?.content.parts ?? []
-        const functionCalls = firstParts.filter(p => p.functionCall)
+        const model = getModel(SYSTEM_PROMPT)
+        const first = await model.generateContent({ contents, tools: workspaceTools })
+        const firstParts = first.response.candidates?.[0]?.content.parts ?? []
+        const calls = firstParts.filter(p => p.functionCall)
 
         let finalText = ''
 
-        if (functionCalls.length > 0) {
-          // Execute each function call
-          const functionResponseParts: Part[] = await Promise.all(
-            functionCalls.map(async (part) => {
-              const fc = part.functionCall!
-              send({ type: 'tool_call', tool: fc.name })
-              const fnResult = await executeFunction(fc.name, fc.args as Record<string, unknown>)
-              const r = fnResult as Record<string, unknown>
-              const count =
-                Array.isArray(r?.patients)    ? (r.patients   as unknown[]).length :
-                Array.isArray(r?.providers)   ? (r.providers  as unknown[]).length :
-                Array.isArray(r?.claims)      ? (r.claims     as unknown[]).length :
-                Array.isArray(r?.encounters)  ? (r.encounters as unknown[]).length :
-                Array.isArray(r?.anomalies)   ? (r.anomalies  as unknown[]).length :
-                typeof r?.total === 'number'  ? r.total :
-                undefined
-              send({ type: 'tool_result', tool: fc.name, count })
-              return {
-                functionResponse: {
-                  name: fc.name,
-                  response: fnResult as Record<string, unknown>,
-                },
-              } as Part
-            })
+        if (calls.length > 0) {
+          const responses: Part[] = await Promise.all(
+            calls.map(async part => {
+              const call = part.functionCall!
+              send({ type: 'tool_call', tool: call.name })
+
+              const result = isWorkspaceTool(call.name)
+                ? await executeWorkspaceTool(
+                    prisma,
+                    org.orgId,
+                    call.name,
+                    (call.args ?? {}) as Record<string, unknown>,
+                  )
+                // A hallucinated tool name is told to the model rather than
+                // thrown, so it can correct itself instead of the turn dying.
+                : { error: `No such tool: ${call.name}` }
+
+              send({ type: 'tool_result', tool: call.name, count: resultCount(result) })
+              return { functionResponse: { name: call.name, response: result } } as Part
+            }),
           )
 
-          // Second turn: stream final response with function results
-          const secondResult = await model.generateContentStream({
+          const second = await model.generateContentStream({
             contents: [
               ...contents,
               { role: 'model', parts: firstParts },
-              { role: 'user', parts: functionResponseParts },
+              { role: 'user', parts: responses },
             ],
-            tools: TOOLS,
+            tools: workspaceTools,
           })
 
-          for await (const chunk of secondResult.stream) {
+          for await (const chunk of second.stream) {
             const text = chunk.text()
             if (text) {
               finalText += text
@@ -467,22 +149,20 @@ export async function POST(req: NextRequest) {
             }
           }
         } else {
-          // Direct response — stream not available from first call, send as-is
-          finalText = firstResponse.text()
+          finalText = first.response.text()
           send({ type: 'text', content: finalText })
         }
 
-        send({ type: 'done', agentName })
+        send({ type: 'done', agentName: AGENT_NAME })
 
-        // ── Log to agent_logs (fire-and-forget) ──
         prisma.agentLog.create({
           data: {
             taskId: `chat-${Date.now()}`,
-            agentName: PRISMA_AGENT_NAME[agentName] as Parameters<typeof prisma.agentLog.create>[0]['data']['agentName'],
+            agentName: 'BILLING',
             status: 'COMPLETE',
             intent: message.slice(0, 200),
             message: finalText.slice(0, 500),
-            userId: session.user?.id ?? null,
+            userId: org.userId,
             durationMs: Date.now() - startTime,
           },
         }).catch(console.error)

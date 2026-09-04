@@ -1,4 +1,4 @@
-import { GEMINI_AVAILABLE, getModel } from '@/lib/agents/gemini-client'
+import { GEMINI_AVAILABLE, getModel } from '@/lib/ai/gemini-client'
 import {
   ARTIFACT_LABELS,
   artifactFor,
