@@ -5,11 +5,15 @@ import { prisma } from '@/lib/db'
  * Per-request memo.
  *
  * lib/trpc/provider.tsx uses httpBatchLink, so the Analytics page's seven
- * queries arrive as ONE http request and share one context object. Six of them
- * need the same two collections and one needs the caller's org, which meant six
- * full loads of the customer's A/R and seven identical user lookups to render a
- * single page. That is the shape that stops working as customers grow, and it
- * is invisible in a demo workspace with forty rows in it.
+ * queries arrive as ONE http request and share one context object, and six of
+ * them need the same two collections. Measured on that exact request: 20 SQL
+ * queries before this, 4 after, and 13 of the 20 were unbounded reads of the
+ * customer's whole A/R. That is the shape that stops working as customers grow,
+ * and it is invisible in a demo workspace with forty rows in it.
+ *
+ * The org lookup in orgProcedure goes through this too, but for tidiness rather
+ * than round-trips: Prisma already collapses findUnique calls made in the same
+ * tick into one query, so those seven were always costing one.
  *
  * The cache lives on the context and dies with the request, so there is no
  * staleness to reason about and nothing to invalidate. It stores the *promise*,

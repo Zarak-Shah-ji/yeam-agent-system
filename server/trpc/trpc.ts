@@ -40,8 +40,9 @@ export const orgProcedure = protectedProcedure.use(async ({ ctx, next }) => {
     throw new TRPCError({ code: 'UNAUTHORIZED' })
   }
 
-  // Memoized: every procedure in a batched request would otherwise repeat this
-  // same lookup. See server/trpc/context.ts.
+  // Memoized so a batched request resolves the org once rather than per
+  // procedure. Prisma already collapses same-tick findUnique calls into one
+  // query, so this saves the call, not the round-trip. See ../context.ts.
   const user = await ctx.once(`org:${userId}`, () =>
     ctx.prisma.user.findUnique({
       where: { id: userId },
