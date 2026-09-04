@@ -67,7 +67,7 @@ export function PatientTable() {
                   <TableRow
                     key={p.id}
                     className="cursor-pointer"
-                    onClick={() => router.push(`/patients/${p.id}`)}
+                    onClick={() => router.push(`/demo/patients/${p.id}`)}
                   >
                     <TableCell>
                       <div className="font-medium text-gray-900">{p.firstName} {p.lastName}</div>

@@ -45,7 +45,7 @@ export default function SignupPage() {
   }
 
   return (
-    <div className="flex min-h-screen">
+    <div className="theme-static flex min-h-screen">
       <AuthBrandPanel />
 
       {/* Right panel — form */}

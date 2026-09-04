@@ -4,7 +4,7 @@
   "private": true,
   "packageManager": "pnpm@10.30.1",
   "scripts": {
-    "dev": "next dev",
+    "dev": "prisma generate && next dev",
     "build": "prisma generate && next build",
     "start": "next start",
     "test": "vitest run",

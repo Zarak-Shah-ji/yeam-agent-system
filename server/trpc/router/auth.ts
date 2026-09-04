@@ -4,6 +4,8 @@ import { TRPCError } from '@trpc/server'
 import bcrypt from 'bcryptjs'
 import { z } from 'zod'
 import { SIGNUP_CLOSED_MESSAGE, signupAllowed } from '@/lib/signup-access'
+import { deriveOrgName } from '@/lib/org'
+import { seedSamplePractice } from '@/lib/sample-practice'
 
 export const authRouter = router({
   signup: publicProcedure
@@ -12,6 +14,9 @@ export const authRouter = router({
         email: z.string().email(),
         name: z.string().min(1),
         password: z.string().min(6),
+        // Optional: the signup form does not ask yet, and a derived name is
+        // better than blocking registration on a field nobody wants to fill in.
+        organizationName: z.string().min(1).max(120).optional(),
       })
     )
     .mutation(async ({ input }) => {
@@ -26,14 +31,36 @@ export const authRouter = router({
       }
 
       const passwordHash = await bcrypt.hash(input.password, 12)
-      await prisma.user.create({
+
+      // The account and its workspace are created together, or not at all. A
+      // user row without an org is one that every org-scoped query has to make
+      // an exception for, so don't create one.
+      const user = await prisma.user.create({
         data: {
           email: input.email,
           name: input.name,
           passwordHash,
-          role: 'FRONT_DESK',
+          // Whoever creates the workspace administers it.
+          role: 'ADMIN',
+          org: {
+            create: {
+              name: input.organizationName?.trim() || deriveOrgName(input.email, input.name),
+            },
+          },
         },
+        select: { orgId: true },
       })
+
+      // The workspace opens on a working sample rather than on empty tables.
+      // Best-effort: a sample that fails to seed is a worse first screen, not a
+      // failed signup, and the account is already committed at this point.
+      if (user.orgId) {
+        try {
+          await seedSamplePractice(prisma, user.orgId)
+        } catch (err) {
+          console.error('sample practice seed failed for org', user.orgId, err)
+        }
+      }
 
       return { success: true }
     }),

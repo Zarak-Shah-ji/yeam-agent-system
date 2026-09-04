@@ -104,7 +104,7 @@ export function EncounterList() {
                         </TableCell>
                         <TableCell>
                           <div className="flex items-center gap-2">
-                            <Button size="sm" variant="outline" onClick={() => router.push(`/encounters/${enc.id}`)}>
+                            <Button size="sm" variant="outline" onClick={() => router.push(`/demo/encounters/${enc.id}`)}>
                               <FileText className="h-3 w-3 mr-1" />View
                             </Button>
                             <Button

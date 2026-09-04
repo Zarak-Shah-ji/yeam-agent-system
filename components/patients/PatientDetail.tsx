@@ -190,7 +190,7 @@ export function PatientDetail({ id }: { id: string }) {
                   <div
                     key={e.id}
                     className="flex items-center justify-between px-4 py-3 hover:bg-gray-50 cursor-pointer"
-                    onClick={() => router.push(`/encounters/${e.id}`)}
+                    onClick={() => router.push(`/demo/encounters/${e.id}`)}
                   >
                     <div className="flex items-center gap-3">
                       <FileText className="h-4 w-4 text-gray-400 shrink-0" />

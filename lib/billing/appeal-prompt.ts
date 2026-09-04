@@ -29,6 +29,8 @@ const SHARED_RULES = `Hard rules:
 - Bracketed placeholders are a last resort, not a style. Use at most TWO in the whole letter, and never more than one in a single paragraph. If a fact you would bracket is not essential to the argument, drop the clause instead of bracketing it. Never bracket something the context already gives you — the ICN, the allowed amount, and the billed amount are all present.
 - Do not enumerate an enclosure you do not have. List only documents the context supports; a numbered list containing a bracketed placeholder tells the reader the letter was generated, not written.
 - Capitalize the signing department consistently as "Billing Department".
+- Write like a person, not like a vendor. No buzzwords, no throat-clearing, no corporate register: drop "we trust this clarifies", "in an effort to", "please be advised", "as per", "we would like to take this opportunity", "leverage", "robust", "comprehensive", "utilize" (write "use"), "at this juncture", "kindly". Short declarative sentences. A biller reading it should not be able to tell it was drafted by a machine, and the surest tell is a sentence that sounds like a press release.
+- Do not explain what a code means. Naming a CPT, HCPCS or ICD-10 code is correct; appending its description, its clinical rationale, or a tutorial on when the modifier applies is not. The person reading this adjudicates these codes all day.
 - Use the deadline vocabulary precisely. "Timely filing" means the deadline for the ORIGINAL claim, measured from the date of service. The deadline for an APPEAL is the "appeal filing deadline" or "appeal window", measured from the remittance/R&S/EOB date. Never call the appeal window a timely filing limit — the two are different clocks and a billing manager reads the mix-up as not knowing the difference.
 
 Every document must include:
@@ -83,7 +85,20 @@ This denial is genuinely disputable on its merits, so this document argues the c
 2. Body: make the denial-specific argument set out above. Evidence before assertion, every time.
 3. Close: state precisely what you are asking the payer to do, and name the appeal filing deadline.
 4. Enclosures: only documents the context actually supports.
-Call this document an appeal. Do not call it a corrected claim.`,
+Call this document an appeal. Do not call it a corrected claim.
+
+Length: keep the whole letter under 400 words. This was the single most common
+complaint from working billing managers about machine-drafted appeals — they run
+long, and length reads as padding to the person who has to work the queue. Three
+tight paragraphs that land the argument beat six that circle it. If you are over,
+cut explanation, never evidence.
+
+Do NOT recite what the codes mean. Naming the CPT or ICD-10 code is right;
+following it with the code book's description, the reason the procedure is
+performed, or a general account of the modifier system is wrong. The reader
+adjudicates these codes for a living and reads the recital as filler produced by
+something that does not know what the reader already knows. State the code, state
+the fact that matters about it in this specific case, and move on.`,
 
   'corrected-claim': `STRUCTURE — corrected claim transmittal
 CRITICAL: this is NOT an appeal and must never describe itself as one. The payer
@@ -201,6 +216,14 @@ You will be given the full claim context as JSON. For this denial the correct in
     sections.push(
       `No playbook matched this denial code. Read the denial reason given in the context and rebut that specific reason directly. Do not fall back on a general medical-necessity argument unless the denial is genuinely a necessity denial.`,
     )
+
+  // The remittance often resolves a vague code — CO-16 plus remark N290 is not
+  // "information was missing", it is "the rendering NPI was missing". When the
+  // context carries that, it is the most useful sentence available and must be
+  // the substance of the document rather than a footnote to it.
+  sections.push(
+    `If the context carries a "resolvedDefect", that is what the payer's remittance actually said was wrong, read from the remark code. Build the document around it and state the specific defect and the specific correction — never fall back on the vague wording of the reason code when the specific cause is known. If "payerAllowsAppeal" is false, the payer has assigned NO appeal rights: this must be a corrected resubmission and must not describe itself as an appeal or request reconsideration. If "resolvedDefect" is null, do not speculate about what was missing; say what the remittance says and no more.`,
+  )
 
   if (opts.payer) sections.push(payerBrief(opts.payer, artifact))
 

@@ -4,35 +4,54 @@ import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { useSession, signOut } from 'next-auth/react'
 import {
-  LayoutDashboard,
-  Users,
-  Calendar,
-  FileText,
+  ListChecks,
   CreditCard,
   BarChart3,
-  Activity,
+  Building2,
+  PlugZap,
   ChevronLeft,
   ChevronRight,
   LogOut,
+  Sun,
+  Moon,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useSidebar } from './sidebar-context'
+import { useTheme } from './theme-context'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 
+// One nav, for one workspace.
+//
+// There used to be a second group here pointing at /demo — a parallel set of
+// sections over seeded EHR tables that no customer's upload could ever reach.
+// It made the real product look empty on day one and taught people that the
+// sample was somewhere else. The sample is now seeded into the workspace's own
+// tables as an import batch, so these sections show it directly and a banner
+// says so. See lib/sample-practice.ts.
 const navItems = [
-  { href: '/', label: 'Dashboard', icon: LayoutDashboard },
-  { href: '/patients', label: 'Patients', icon: Users },
-  { href: '/appointments', label: 'Appointments', icon: Calendar },
-  { href: '/encounters', label: 'Encounters', icon: FileText },
+  { href: '/worklist', label: 'Worklist', icon: ListChecks },
   { href: '/claims', label: 'Claims', icon: CreditCard },
-  { href: '/billing', label: 'Billing', icon: Activity },
   { href: '/analytics', label: 'Analytics', icon: BarChart3 },
+  { href: '/payers', label: 'Payers', icon: Building2 },
+  { href: '/connect', label: 'Connect data', icon: PlugZap },
 ]
+
+// The icon is chosen by the `dark:` variant rather than by React state so it
+// is correct on the very first paint, before hydration has told us the theme.
+function ThemeIcon({ className }: { className: string }) {
+  return (
+    <>
+      <Moon className={cn(className, 'dark:hidden')} />
+      <Sun className={cn(className, 'hidden dark:block')} />
+    </>
+  )
+}
 
 export function Sidebar() {
   const pathname = usePathname()
   const { isOpen, toggle, close } = useSidebar()
   const { data: session } = useSession()
+  const { theme, toggle: toggleTheme } = useTheme()
   const userName = session?.user?.name
   const userRole = (session?.user as { role?: string })?.role
   const initials = userName
@@ -71,17 +90,10 @@ export function Sidebar() {
         </button>
       </div>
 
-      {/* Clinic name - only when expanded */}
-      {isOpen && (
-        <div className="px-4 py-2 text-xs text-gray-500 font-medium truncate">
-          Demo environment
-        </div>
-      )}
-
       {/* Nav */}
       <nav className="flex-1 space-y-0.5 px-2 py-2">
         {navItems.map(({ href, label, icon: Icon }) => {
-          const active = href === '/' ? pathname === '/' : pathname.startsWith(href)
+          const active = pathname.startsWith(href)
           return (
             <Link
               key={href}
@@ -118,25 +130,45 @@ export function Sidebar() {
                 </p>
               )}
             </div>
+            <div className="flex shrink-0 items-center gap-1">
+              <button
+                onClick={toggleTheme}
+                title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+                aria-label={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+                className="rounded p-1 text-gray-400 hover:bg-gray-200 hover:text-gray-600 transition-colors"
+              >
+                <ThemeIcon className="h-3.5 w-3.5" />
+              </button>
+              <button
+                onClick={() => signOut({ callbackUrl: '/login' })}
+                title="Sign out"
+                className="rounded p-1 text-gray-400 hover:bg-gray-200 hover:text-gray-600 transition-colors"
+              >
+                <LogOut className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-1">
+            <button
+              onClick={toggleTheme}
+              title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+              aria-label={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+              className="flex items-center justify-center w-full rounded p-1 text-gray-400 hover:bg-gray-200 hover:text-gray-600 transition-colors"
+            >
+              <ThemeIcon className="h-4 w-4" />
+            </button>
             <button
               onClick={() => signOut({ callbackUrl: '/login' })}
               title="Sign out"
-              className="text-gray-400 hover:text-gray-600 transition-colors"
+              className="flex items-center justify-center w-full rounded p-1 text-gray-400 hover:bg-gray-200 hover:text-gray-600 transition-colors"
             >
-              <LogOut className="h-3.5 w-3.5" />
+              <LogOut className="h-4 w-4" />
             </button>
           </div>
-        ) : (
-          <button
-            onClick={() => signOut({ callbackUrl: '/login' })}
-            title="Sign out"
-            className="flex items-center justify-center w-full p-1 text-gray-400 hover:text-gray-600 transition-colors"
-          >
-            <LogOut className="h-4 w-4" />
-          </button>
         )}
         {isOpen && (
-          <p className="text-xs text-gray-400 mt-1.5">Phase 2 - v0.2.0</p>
+          <p className="text-xs text-gray-400 mt-1.5">Phase 3 - v0.3.0</p>
         )}
       </div>
     </aside>

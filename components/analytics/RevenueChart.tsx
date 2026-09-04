@@ -15,15 +15,24 @@ interface Props {
   data: DataPoint[]
 }
 
+const TOOLTIP_STYLE = {
+  backgroundColor: 'var(--color-white)',
+  border: '1px solid var(--color-gray-200)',
+  borderRadius: 6,
+  color: 'var(--color-gray-900)',
+} as const
+
 export function RevenueChart({ data }: Props) {
   return (
     <div style={{ height: 280 }}>
       <ResponsiveContainer width="100%" height="100%">
         <ComposedChart data={data} margin={{ top: 4, right: 16, left: 8, bottom: 4 }}>
-          <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-          <XAxis dataKey="date" tick={{ fontSize: 11 }} />
-          <YAxis tick={{ fontSize: 11 }} tickFormatter={v => `$${(v / 1000).toFixed(0)}k`} />
+          <CartesianGrid strokeDasharray="3 3" stroke="var(--color-gray-200)" />
+          <XAxis dataKey="date" tick={{ fontSize: 11, fill: 'var(--color-gray-500)' }} />
+          <YAxis tick={{ fontSize: 11, fill: 'var(--color-gray-500)' }} tickFormatter={v => `$${(v / 1000).toFixed(0)}k`} />
           <Tooltip
+            contentStyle={TOOLTIP_STYLE}
+            labelStyle={{ color: 'var(--color-gray-900)' }}
             formatter={(value: number | string | undefined, name: string | undefined) => [`$${Number(value ?? 0).toLocaleString()}`, name ?? '']}
           />
           <Legend />

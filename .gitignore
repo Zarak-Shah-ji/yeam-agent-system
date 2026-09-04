@@ -27,3 +27,6 @@ build/
 # Large data files
 *.csv
 .vercel
+
+# ...but the shipped sample uploads are fixtures the import tests read, so they ship.
+!samples/*.csv

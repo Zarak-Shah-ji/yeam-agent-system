@@ -6,6 +6,7 @@ import { prisma } from '@/lib/db'
 import bcrypt from 'bcryptjs'
 import { z } from 'zod'
 import { signupAllowed } from '@/lib/signup-access'
+import { ensureOrgForUser } from '@/lib/org'
 
 const loginSchema = z.object({
   email: z.string().email(),
@@ -41,7 +42,16 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       if (!email) return false
 
       const existing = await prisma.user.findUnique({ where: { email } })
-      if (existing) return true
+      if (existing) {
+        // The only record that a sign-in happened. JWT sessions mean the
+        // sessions table is never written, so without this the app cannot
+        // answer "who has been using it" at all. Best-effort: a failed stamp
+        // must never cost someone their login.
+        await prisma.user
+          .update({ where: { id: existing.id }, data: { lastLoginAt: new Date() } })
+          .catch(() => {})
+        return true
+      }
 
       return signupAllowed(email)
     },
@@ -58,6 +68,15 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         ;(session.user as { role?: string }).role = token.role as string
       }
       return session
+    },
+  },
+  events: {
+    // OAuth accounts are provisioned by the Prisma adapter, which knows nothing
+    // about organizations. This is the only hook that fires after that row
+    // exists, so it is where a Google signup gets its workspace. The credentials
+    // path creates both together in authRouter.signup and never reaches here.
+    async createUser({ user }) {
+      if (user.id) await ensureOrgForUser(user.id)
     },
   },
   providers: [

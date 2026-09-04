@@ -57,8 +57,17 @@ export const dashboardRouter = router({
     }
   }),
 
+  /**
+   * The caller's own recent agent activity.
+   *
+   * This used to be an unfiltered findMany joining every user's name and email,
+   * so any signed-in account saw the last ten agent actions of everyone on the
+   * deployment. Harmless while the data was synthetic and registration closed;
+   * a cross-tenant leak the moment two billing companies share a box.
+   */
   getRecentAgentLogs: protectedProcedure.query(async ({ ctx }) => {
     return ctx.prisma.agentLog.findMany({
+      where: { userId: ctx.session.user?.id },
       orderBy: { createdAt: 'desc' },
       take: 10,
       include: {

@@ -17,46 +17,58 @@ async function main() {
   // ─── Users ───────────────────────────────────────────────────────────────
   const passwordHash = await bcrypt.hash('demo1234', 12)
 
+  // The demo logins belong to a workspace like any other account. Without one,
+  // orgProcedure refuses every org-scoped page and the whole product reads as a
+  // dead end pointing at the sample practice. `update` repairs rows seeded
+  // before workspaces existed.
+  const demoOrg =
+    (await prisma.organization.findFirst({ where: { name: 'Yeam Demo Clinic' } })) ??
+    (await prisma.organization.create({ data: { name: 'Yeam Demo Clinic' } }))
+
   const adminUser = await prisma.user.upsert({
     where: { email: 'admin@yeam.demo' },
-    update: {},
+    update: { orgId: demoOrg.id },
     create: {
       email: 'admin@yeam.demo',
       name: 'Admin User',
       passwordHash,
+      orgId: demoOrg.id,
       role: 'ADMIN',
     },
   })
 
   const providerUser = await prisma.user.upsert({
     where: { email: 'provider@yeam.demo' },
-    update: {},
+    update: { orgId: demoOrg.id },
     create: {
       email: 'provider@yeam.demo',
       name: 'Dr. Sarah Chen',
       passwordHash,
+      orgId: demoOrg.id,
       role: 'PROVIDER',
     },
   })
 
   await prisma.user.upsert({
     where: { email: 'frontdesk@yeam.demo' },
-    update: {},
+    update: { orgId: demoOrg.id },
     create: {
       email: 'frontdesk@yeam.demo',
       name: 'Maria Lopez',
       passwordHash,
+      orgId: demoOrg.id,
       role: 'FRONT_DESK',
     },
   })
 
   await prisma.user.upsert({
     where: { email: 'billing@yeam.demo' },
-    update: {},
+    update: { orgId: demoOrg.id },
     create: {
       email: 'billing@yeam.demo',
       name: 'James Okafor',
       passwordHash,
+      orgId: demoOrg.id,
       role: 'BILLING',
     },
   })

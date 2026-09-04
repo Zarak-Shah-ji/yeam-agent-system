@@ -9,5 +9,7 @@ export const metadata: Metadata = {
 }
 
 export default function HowWeConnectLayout({ children }: { children: React.ReactNode }) {
-  return children
+  // `theme-static` pins the light palette: this page is dark by design and
+  // must not invert when a signed-in user has the dashboard in dark mode.
+  return <div className="theme-static">{children}</div>
 }
