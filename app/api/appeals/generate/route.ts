@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { hasAppealsAccess } from '@/lib/appeals/access'
+import { callerKey, createRateLimiter } from '@/lib/appeals/rate-limit'
 import {
   MAX_FILES,
   MAX_NOTES_CHARS,
@@ -15,49 +16,22 @@ export const runtime = 'nodejs'
 /** Drafting a letter takes well over the default budget on a cold start. */
 export const maxDuration = 60
 
-const RATE_LIMIT = 10
-const RATE_WINDOW_MS = 60 * 60 * 1000
-const hits = new Map<string, number[]>()
-
 /**
- * Coarse per-IP throttle. In-memory means it resets on redeploy and is per
- * lambda instance, which is fine — it exists to stop a shared link burning API
- * credits, not to be an exact quota.
- *
- * Checking and recording are separate so that a rejected upload (wrong format,
- * too large) doesn't consume quota — only requests that reach the model count.
+ * Ten letters an hour per caller. The portal passcode is link-shared with
+ * outside reviewers, so the code is the only thing between a shared link and an
+ * unmetered model endpoint.
  */
-function recentHits(ip: string): number[] {
-  const now = Date.now()
-  return (hits.get(ip) ?? []).filter(t => now - t < RATE_WINDOW_MS)
-}
-
-function rateLimited(ip: string): boolean {
-  const recent = recentHits(ip)
-  hits.set(ip, recent)
-  return recent.length >= RATE_LIMIT
-}
-
-function recordHit(ip: string): void {
-  hits.set(ip, [...recentHits(ip), Date.now()])
-
-  // Drop callers whose window has fully expired so the map can't grow forever.
-  if (hits.size > 500) {
-    for (const key of [...hits.keys()]) {
-      if (recentHits(key).length === 0) hits.delete(key)
-    }
-  }
-}
+const limiter = createRateLimiter('appeals-generate', 10)
 
 export async function POST(req: Request) {
   if (!(await hasAppealsAccess())) {
     return NextResponse.json({ error: 'Enter the access code to draft an appeal.' }, { status: 401 })
   }
 
-  const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown'
-  if (rateLimited(ip)) {
+  const caller = callerKey(req)
+  if (limiter.limited(caller)) {
     return NextResponse.json(
-      { error: `Rate limit reached (${RATE_LIMIT} letters per hour). Try again shortly.` },
+      { error: 'Rate limit reached (10 letters per hour). Try again shortly.' },
       { status: 429 },
     )
   }
@@ -116,7 +90,7 @@ export async function POST(req: Request) {
 
   let letter: string
   try {
-    recordHit(ip)
+    limiter.record(caller)
     letter = await draftAppealFromDocument({ parts, notes })
   } catch (err) {
     console.error('appeal drafting failed', err)

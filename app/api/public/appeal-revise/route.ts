@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { secretMatches } from '@/lib/appeals/demo-auth'
+import { callerKey, createRateLimiter } from '@/lib/appeals/rate-limit'
 import { reviseAppealLetter, type ReviseTurn } from '@/lib/billing/revise-appeal'
 import { prisma } from '@/lib/db'
 
@@ -42,6 +43,9 @@ function cleanHistory(value: unknown): ReviseTurn[] {
     .map(t => ({ role: t.role, text: t.text.slice(0, MAX_INSTRUCTION_CHARS) }))
 }
 
+/** Revisions are cheaper than a first draft, but not free. Its own bucket. */
+const limiter = createRateLimiter('public-appeal-revise', 20)
+
 export async function POST(req: Request) {
   if (!process.env.PUBLIC_DEMO_SECRET) {
     return NextResponse.json(
@@ -51,6 +55,14 @@ export async function POST(req: Request) {
   }
   if (!secretMatches(req.headers.get('x-yeam-demo-secret'))) {
     return NextResponse.json({ error: 'Not authorised.' }, { status: 401 })
+  }
+
+  const caller = callerKey(req)
+  if (limiter.limited(caller)) {
+    return NextResponse.json(
+      { error: 'That is a lot of revisions in one hour. Try again shortly.' },
+      { status: 429 },
+    )
   }
 
   let body: { letter?: unknown; instruction?: unknown; history?: unknown }
@@ -81,6 +93,7 @@ export async function POST(req: Request) {
 
   let revised: { letter: string; reply: string }
   try {
+    limiter.record(caller)
     revised = await reviseAppealLetter({
       letter,
       instruction,

@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { secretMatches } from '@/lib/appeals/demo-auth'
+import { callerKey, createRateLimiter } from '@/lib/appeals/rate-limit'
 import {
   MAX_FILES,
   MAX_NOTES_CHARS,
@@ -32,6 +33,15 @@ export const maxDuration = 60
 /** Keeps public-demo letters out of the curated /appeals showcase list. */
 const PUBLIC_DEMO_SESSION = 'public-demo'
 
+/**
+ * Six drafts an hour per visitor.
+ *
+ * The shared secret is the only other guard on this endpoint, and it is held by
+ * a public marketing site. That site throttles its own proxy, but that is a
+ * control on the caller's side of the boundary — the wrong side to rely on.
+ */
+const limiter = createRateLimiter('public-appeal-demo', 6)
+
 export async function POST(req: Request) {
   if (!process.env.PUBLIC_DEMO_SECRET) {
     return NextResponse.json(
@@ -41,6 +51,14 @@ export async function POST(req: Request) {
   }
   if (!secretMatches(req.headers.get('x-yeam-demo-secret'))) {
     return NextResponse.json({ error: 'Not authorised.' }, { status: 401 })
+  }
+
+  const caller = callerKey(req)
+  if (limiter.limited(caller)) {
+    return NextResponse.json(
+      { error: 'That is a lot of drafts in one hour. Try again shortly.' },
+      { status: 429 },
+    )
   }
 
   let form: FormData
@@ -98,6 +116,7 @@ export async function POST(req: Request) {
 
   let letter: string
   try {
+    limiter.record(caller)
     letter = await draftAppealFromDocument({ parts, notes })
   } catch (err) {
     console.error('public demo drafting failed', err)
