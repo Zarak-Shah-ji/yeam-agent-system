@@ -1,24 +1,18 @@
 import { router } from '../trpc'
 import { authRouter } from './auth'
-import { dashboardRouter } from './dashboard'
-import { patientsRouter } from './patients'
-import { appointmentsRouter } from './appointments'
-import { encountersRouter } from './encounters'
-import { claimsRouter } from './claims'
-import { analyticsRouter } from './analytics'
+import { activityRouter } from './activity'
 import { worklistRouter } from './worklist'
 import { insightsRouter } from './insights'
 import { importsRouter } from './imports'
 import { connectionsRouter } from './connections'
 
+/**
+ * Every router here is org-scoped (see orgProcedure) except `auth`, which is
+ * pre-login by necessity. Adding one that is not is a tenant-isolation bug.
+ */
 export const appRouter = router({
   auth: authRouter,
-  dashboard: dashboardRouter,
-  patients: patientsRouter,
-  appointments: appointmentsRouter,
-  encounters: encountersRouter,
-  claims: claimsRouter,
-  analytics: analyticsRouter,
+  activity: activityRouter,
   worklist: worklistRouter,
   insights: insightsRouter,
   imports: importsRouter,

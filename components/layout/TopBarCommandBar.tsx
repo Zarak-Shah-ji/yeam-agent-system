@@ -1,12 +1,14 @@
 'use client'
 
-import { usePathname } from 'next/navigation'
 import { CommandBar } from './CommandBar'
 
-// Renders CommandBar in the top bar only on non-home routes.
-// The home page hosts its own hero-sized instance.
+/**
+ * The command bar lives in the top bar on every workspace route.
+ *
+ * There used to be a `pathname === '/'` guard here, because the home page hosted
+ * its own hero-sized instance. That home page was the EHR dashboard over seeded
+ * data; `/` now redirects straight to /worklist, so the guard could never fire.
+ */
 export function TopBarCommandBar() {
-  const pathname = usePathname()
-  if (pathname === '/') return null
   return <CommandBar />
 }

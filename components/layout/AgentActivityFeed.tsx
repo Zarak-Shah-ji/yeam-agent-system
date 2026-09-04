@@ -32,7 +32,7 @@ type AgentLogItem = {
 }
 
 export function AgentActivityFeed() {
-  const { data, refetch } = trpc.dashboard.getRecentAgentLogs.useQuery()
+  const { data, refetch } = trpc.activity.recent.useQuery()
   const logs = data as AgentLogItem[] | undefined
 
   // Auto-refresh every 10 seconds
