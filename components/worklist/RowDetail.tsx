@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { Check, Info, Loader2, PhoneOff, Search } from 'lucide-react'
 import { trpc } from '@/lib/trpc/client'
 import { Badge } from '@/components/ui/badge'
@@ -96,13 +96,21 @@ export function RowDetail({
 }: RowDetailProps) {
   const [draftNote, setDraftNote] = useState(note ?? '')
   const [followUp, setFollowUp] = useState(toDateInput(followUpAt))
+  const [shownRow, setShownRow] = useState(rowId)
 
   // The dialog is reused across rows without unmounting, so local state has to
   // follow the row it is showing or the previous row's note leaks into the next.
-  useEffect(() => {
+  //
+  // Reset during render, keyed on rowId alone. This used to be an effect that
+  // also depended on `note` and `followUpAt`, which reset the fields whenever
+  // those props changed — and saving anything invalidates the worklist, so a
+  // background refetch landing mid-sentence wiped whatever the biller was
+  // typing. Same reset, but only when the row genuinely changes.
+  if (shownRow !== rowId) {
+    setShownRow(rowId)
     setDraftNote(note ?? '')
     setFollowUp(toDateInput(followUpAt))
-  }, [rowId, note, followUpAt])
+  }
 
   const utils = trpc.useUtils()
   const refresh = () => {

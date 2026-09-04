@@ -15,10 +15,8 @@ import {
   revenueByMonth,
   topCarcs,
   topCodes,
-  type ClaimFact,
-  type DenialFact,
+
 } from '@/lib/insights/aggregate'
-import type { ClaimStatus } from '@/lib/imports/claims-profile'
 
 /**
  * The customer's own numbers.

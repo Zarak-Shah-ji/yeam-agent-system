@@ -7,8 +7,8 @@ on:
     branches: [main]
 
 jobs:
-  typecheck-lint:
-    name: TypeScript + Lint
+  verify:
+    name: TypeScript + Lint + Tests
     runs-on: ubuntu-latest
 
     steps:
@@ -31,3 +31,9 @@ jobs:
 
       - name: Lint
         run: pnpm lint
+
+      # The suite existed for months and never ran here, so a change could break
+      # all of it and still go green. It needs no database: every test covers a
+      # pure function or parses a fixture from samples/.
+      - name: Test
+        run: pnpm test
