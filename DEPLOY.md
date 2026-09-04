@@ -166,7 +166,9 @@ To load the Yeam Health Clinic demo dataset:
 DATABASE_URL="postgresql://..." pnpm prisma db seed
 ```
 
-This creates 4 users, 20 patients, 30 appointments, and sample claims.
+This creates the demo organization, 4 logins, and the sample practice — a
+small set of denials and an A/R snapshot seeded into the workspace's own tables
+as an import batch, exactly as a new customer's workspace gets on signup.
 
 ---
 
@@ -176,7 +178,7 @@ This creates 4 users, 20 patients, 30 appointments, and sample claims.
 2. Log in with a demo account:
    - `admin@yeam.demo` / `demo1234`
    - `provider@yeam.demo` / `demo1234`
-3. Confirm these pages load: `/patients`, `/appointments`, `/analytics`
+3. Confirm these pages load: `/worklist`, `/claims`, `/analytics`, `/payers`, `/connect`
 
 ---
 
