@@ -50,10 +50,21 @@ describe('Auth configuration — error=Configuration regression guard', () => {
     expect(linkingCount).toBeGreaterThanOrEqual(1)
   })
 
-  it('records that a sign-in happened', () => {
+  it('records that a sign-in happened, including the first one', () => {
     // JWT sessions mean the sessions table is never written, so this stamp is
     // the only record of who has used the app. Losing it is silent.
+    //
+    // It has to be stamped from the signIn EVENT rather than the callback. The
+    // callback is the gate deciding whether a new account may be created, so on
+    // a first OAuth sign-in it runs before the adapter writes the row and its
+    // existing-user branch never fires. Stamping from there left every Google
+    // signup's first session unrecorded — lastLoginAt stayed null until the
+    // person came back a second time. The event fires after the row exists, for
+    // every provider.
     expect(authConfig).toMatch(/lastLoginAt/)
+
+    const events = authConfig.slice(authConfig.indexOf('events: {'))
+    expect(events).toMatch(/lastLoginAt/)
   })
 
   it('provisions a workspace for OAuth signups', () => {

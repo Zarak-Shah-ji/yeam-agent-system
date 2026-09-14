@@ -43,14 +43,6 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
 
       const existing = await prisma.user.findUnique({ where: { email } })
       if (existing) {
-        // The only record that a sign-in happened. JWT sessions mean the
-        // sessions table is never written, so without this the app cannot
-        // answer "who has been using it" at all. Best-effort: a failed stamp
-        // must never cost someone their login.
-        await prisma.user
-          .update({ where: { id: existing.id }, data: { lastLoginAt: new Date() } })
-          .catch(() => {})
-
         // Heal an account that has no workspace.
         //
         // ensureOrgForUser used to run from exactly one place: the createUser
@@ -102,6 +94,29 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     // path creates both together in authRouter.signup and never reaches here.
     async createUser({ user }) {
       if (user.id) await ensureOrgForUser(user.id)
+    },
+
+    // The only record that a sign-in happened. JWT sessions mean the sessions
+    // table is never written, so without this the app cannot answer "who has
+    // been using it" at all.
+    //
+    // This used to live in the signIn CALLBACK, inside the branch taken when an
+    // existing user row is found. That branch cannot run on a first Google
+    // sign-in: the callback is the gate deciding whether the account may be
+    // created, so it fires before the adapter writes the row and `existing` is
+    // null. Every Google signup's first session therefore went unrecorded and
+    // lastLoginAt stayed null until the person came back — wrong for precisely
+    // the arrivals most worth knowing about, and silently so.
+    //
+    // The signIn EVENT fires after the row is written, for every provider, so
+    // user.id is real whether this is the first sign-in or the hundredth.
+    // Best-effort, like the backfill above: a failed stamp must never cost
+    // someone their login.
+    async signIn({ user }) {
+      if (!user.id) return
+      await prisma.user
+        .update({ where: { id: user.id }, data: { lastLoginAt: new Date() } })
+        .catch(() => {})
     },
   },
   providers: [
