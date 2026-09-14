@@ -1,5 +1,4 @@
 import { prisma } from '@/lib/db'
-import { seedSamplePractice } from '@/lib/sample-practice'
 
 /**
  * Workspace naming and provisioning.
@@ -77,12 +76,13 @@ export async function ensureOrgForUser(userId: string): Promise<string | null> {
     data: { orgId: org.id, role: 'ADMIN' },
   })
 
-  // Same as the credentials path: a new workspace opens on the sample practice.
-  try {
-    await seedSamplePractice(prisma, org.id)
-  } catch (err) {
-    console.error('sample practice seed failed for org', org.id, err)
-  }
+  // A new workspace opens empty, on the import screen. It used to open on a
+  // seeded sample practice; that put example denials and example revenue in
+  // front of someone whose first question is what the product does with THEIR
+  // file, and every section then had to caveat itself. The sections already
+  // render an honest "nothing imported yet" that points at /connect, which is
+  // the screen the customer wants anyway. See lib/sample-practice.ts, still
+  // used by prisma/seed.ts for local development.
 
   return org.id
 }

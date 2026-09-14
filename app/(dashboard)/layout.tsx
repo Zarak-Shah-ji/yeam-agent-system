@@ -1,11 +1,9 @@
 import { redirect } from 'next/navigation'
 import { auth } from '@/lib/auth'
-import { getWorkspaceState } from '@/lib/workspace'
 import { SidebarProvider } from '@/components/layout/sidebar-context'
 import { ChatProvider } from '@/components/layout/chat-context'
 import { SessionProviderWrapper } from '@/components/layout/SessionProviderWrapper'
 import { Sidebar } from '@/components/layout/Sidebar'
-import { SampleBanner } from '@/components/layout/SampleBanner'
 import { MobileBackdrop } from '@/components/layout/MobileBackdrop'
 import { HamburgerButton } from '@/components/layout/HamburgerButton'
 import { PageTitle } from '@/components/layout/PageTitle'
@@ -22,10 +20,6 @@ export default async function DashboardLayout({
   if (!session?.user) {
     redirect('/login')
   }
-
-  // Resolved here rather than per-page: a client query would tell a paying
-  // customer their own denials were sample data for a frame.
-  const workspace = await getWorkspaceState(session.user.id)
 
   return (
     <SessionProviderWrapper>
@@ -51,7 +45,6 @@ export default async function DashboardLayout({
           <div className="flex flex-1 overflow-hidden min-w-0">
             {/* Page content */}
             <main className="flex-1 overflow-y-auto p-4 md:p-6 min-w-0">
-              {workspace.kind === 'sample' && <SampleBanner />}
               {children}
             </main>
 

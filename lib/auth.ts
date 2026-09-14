@@ -50,6 +50,31 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         await prisma.user
           .update({ where: { id: existing.id }, data: { lastLoginAt: new Date() } })
           .catch(() => {})
+
+        // Heal an account that has no workspace.
+        //
+        // ensureOrgForUser used to run from exactly one place: the createUser
+        // event, which Auth.js fires only on the sign-in that first creates or
+        // links the account. Every later sign-in finds the Account row and
+        // returns before that event. So an account whose provisioning was
+        // skipped — created before organizations existed, or linked by email
+        // from a Google sign-in whose createUser threw — stayed orgless
+        // forever, and orgProcedure refuses every org-scoped query with
+        // FORBIDDEN. That is an account that can sign in and then reach
+        // nothing, including the import page that would have fixed it.
+        //
+        // Doing it here instead means the repair is a sign-in away rather than
+        // a manual database edit. Best-effort for the same reason as the stamp:
+        // a workspace we failed to create is a bad first screen, not a reason
+        // to refuse a valid login.
+        if (!existing.orgId) {
+          try {
+            await ensureOrgForUser(existing.id)
+          } catch (err) {
+            console.error('workspace backfill failed for user', existing.id, err)
+          }
+        }
+
         return true
       }
 

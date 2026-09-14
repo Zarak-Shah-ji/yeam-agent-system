@@ -5,7 +5,6 @@ import bcrypt from 'bcryptjs'
 import { z } from 'zod'
 import { SIGNUP_CLOSED_MESSAGE, signupAllowed } from '@/lib/signup-access'
 import { deriveOrgName } from '@/lib/org'
-import { seedSamplePractice } from '@/lib/sample-practice'
 
 export const authRouter = router({
   signup: publicProcedure
@@ -35,7 +34,7 @@ export const authRouter = router({
       // The account and its workspace are created together, or not at all. A
       // user row without an org is one that every org-scoped query has to make
       // an exception for, so don't create one.
-      const user = await prisma.user.create({
+      await prisma.user.create({
         data: {
           email: input.email,
           name: input.name,
@@ -48,20 +47,13 @@ export const authRouter = router({
             },
           },
         },
-        select: { orgId: true },
+        select: { id: true },
       })
 
-      // The workspace opens on a working sample rather than on empty tables.
-      // Best-effort: a sample that fails to seed is a worse first screen, not a
-      // failed signup, and the account is already committed at this point.
-      if (user.orgId) {
-        try {
-          await seedSamplePractice(prisma, user.orgId)
-        } catch (err) {
-          console.error('sample practice seed failed for org', user.orgId, err)
-        }
-      }
-
+      // The workspace opens empty, on the import screen, rather than on a
+      // seeded sample practice. Same reason as the OAuth path in lib/org.ts:
+      // the first screen should ask for the customer's file, not explain away
+      // someone else's numbers.
       return { success: true }
     }),
 })

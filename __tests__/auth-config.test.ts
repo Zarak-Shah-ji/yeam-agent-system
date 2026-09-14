@@ -63,6 +63,63 @@ describe('Auth configuration — error=Configuration regression guard', () => {
     expect(authConfig).toMatch(/createUser/)
     expect(authConfig).toMatch(/ensureOrgForUser/)
   })
+
+  it('backfills a workspace on sign-in for an account that has none', () => {
+    // The createUser event fires only on the sign-in that first creates or
+    // links the account; every later sign-in returns before it. Provisioning
+    // from there alone meant an account whose createUser was skipped or threw
+    // stayed orgless forever, and orgProcedure refused every query with
+    // FORBIDDEN — signed in, and able to reach nothing. The repair has to live
+    // on a path that runs on EVERY sign-in, which is the signIn callback.
+    const signInCallback = authConfig.slice(
+      authConfig.indexOf('async signIn('),
+      authConfig.indexOf('jwt({ token, user })'),
+    )
+    expect(signInCallback).toMatch(/orgId/)
+    expect(signInCallback).toMatch(/ensureOrgForUser/)
+  })
+
+  it('never refuses a valid login because provisioning failed', () => {
+    // Best-effort, like the lastLoginAt stamp above it: a workspace we could
+    // not create is a bad first screen, not a reason to reject the sign-in.
+    const signInCallback = authConfig.slice(
+      authConfig.indexOf('async signIn('),
+      authConfig.indexOf('jwt({ token, user })'),
+    )
+    expect(signInCallback).toMatch(/catch/)
+  })
+})
+
+describe('Empty states — no dead ends for a signed-in account', () => {
+  const noWorkspaceSource = readFileSync(
+    join(PROJECT_ROOT, 'components/insights/NoWorkspace.tsx'),
+    'utf8',
+  )
+  // Assert against what renders, not against the comments. The file explains at
+  // length what this card used to say, and a guard that matched the
+  // explanation would fail the moment someone documented the fix.
+  const noWorkspace = noWorkspaceSource.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*/g, '')
+
+  it('does not link anywhere that no longer routes', () => {
+    // /demo stopped existing when the sample practice became data inside a
+    // workspace rather than a section of its own. The card kept linking to it,
+    // so the single button an orgless account was given returned a 404 — on
+    // every section, because every section renders this card on FORBIDDEN.
+    const links = noWorkspace.match(/href="[^"]*"/g) ?? []
+    expect(links.length).toBeGreaterThan(0)
+    expect(links).not.toContain('href="/demo"')
+  })
+
+  it('does not tell a signed-in reader to register', () => {
+    // This card only ever renders behind an authenticated session, so "sign up
+    // for a new account" is advice the reader cannot act on — it reads as a
+    // broken login rather than as a workspace that is not ready.
+    expect(noWorkspace).not.toMatch(/[Ss]ign up/)
+  })
+
+  it('points at the import screen', () => {
+    expect(noWorkspace).toMatch(/href="\/connect"/)
+  })
 })
 
 describe('.env.example — Vercel deployment requirements', () => {
