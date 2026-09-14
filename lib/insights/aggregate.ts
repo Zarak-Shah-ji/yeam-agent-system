@@ -94,7 +94,7 @@ export function outstanding(claim: ClaimFact): number {
 
 const MS_PER_DAY = 86_400_000
 
-function daysBetween(from: Date, to: Date): number {
+export function daysBetween(from: Date, to: Date): number {
   const a = Date.UTC(from.getFullYear(), from.getMonth(), from.getDate())
   const b = Date.UTC(to.getFullYear(), to.getMonth(), to.getDate())
   return Math.round((b - a) / MS_PER_DAY)
@@ -121,12 +121,52 @@ export type AgingBucket = (typeof AGING_BUCKETS)[number]
 
 export type AgingRow = { bucket: AgingBucket; amount: number; count: number }
 
-function bucketFor(age: number): AgingBucket {
+/**
+ * Exported so a single claim can be aged the same way the chart ages the pile.
+ * A detail panel that restated these boundaries would drift from the chart the
+ * customer is comparing it against.
+ */
+export function bucketFor(age: number): AgingBucket {
   if (age <= 30) return '0-30'
   if (age <= 60) return '31-60'
   if (age <= 90) return '61-90'
   if (age <= 120) return '91-120'
   return '120+'
+}
+
+/**
+ * The anchor-date window that selects one aging bucket, as of today.
+ *
+ * The inverse of bucketFor, kept beside it so the claims table can filter to a
+ * bucket in SQL and land on exactly the rows the chart counted. Two independent
+ * implementations of "61-90 days" that disagree by a day is the kind of thing a
+ * customer notices only when a total does not reconcile.
+ *
+ * `from` is inclusive and `to` is inclusive. A null bound means unbounded — the
+ * newest bucket has no upper limit because a future-dated service date ages as
+ * 0-30, which is what bucketFor does with a negative age.
+ */
+export function agingBucketRange(
+  bucket: AgingBucket,
+  today: Date,
+): { from: Date | null; to: Date | null } {
+  const dayBefore = (n: number) => {
+    const d = new Date(today.getFullYear(), today.getMonth(), today.getDate())
+    d.setDate(d.getDate() - n)
+    return d
+  }
+  switch (bucket) {
+    case '0-30':
+      return { from: dayBefore(30), to: null }
+    case '31-60':
+      return { from: dayBefore(60), to: dayBefore(31) }
+    case '61-90':
+      return { from: dayBefore(90), to: dayBefore(61) }
+    case '91-120':
+      return { from: dayBefore(120), to: dayBefore(91) }
+    case '120+':
+      return { from: null, to: dayBefore(121) }
+  }
 }
 
 /**

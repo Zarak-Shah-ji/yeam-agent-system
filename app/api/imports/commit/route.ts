@@ -2,8 +2,15 @@ import { NextResponse } from 'next/server'
 import { requireOrg } from '@/lib/org'
 import { prisma } from '@/lib/db'
 import { readImportUpload } from '@/lib/imports/request'
-import { ClaimsFileError, missingColumnsMessage, parseImport } from '@/lib/imports/service'
+import {
+  ClaimsFileError,
+  correctedProfileMessage,
+  missingColumnsMessage,
+  parseImport,
+} from '@/lib/imports/service'
 import { dropSamplePractice } from '@/lib/sample-practice'
+import { reconcileOutcomes } from '@/lib/denials/reconcile'
+import { money } from '@/lib/money'
 
 export const runtime = 'nodejs'
 export const maxDuration = 60
@@ -21,6 +28,81 @@ export const maxDuration = 60
  * insights layer reads the most recent one rather than unioning them, which is
  * what stops two monthly exports double-counting every claim in both.
  */
+/**
+ * Close out appeals this snapshot has already answered.
+ *
+ * Runs on every CLAIMS commit. The alternative was a ledger filled in by hand,
+ * which in practice means a ledger where the wins are recorded and the losses
+ * are not — a dataset that is not thin but actively misleading.
+ *
+ * Deliberately not inside the batch transaction. A reconciliation that fails
+ * must not lose the customer their import; the outcomes are recoverable on the
+ * next upload, the snapshot is not.
+ */
+async function applyOutcomes(
+  orgId: string,
+  claims: readonly {
+    claimNumber?: string | null
+    status: string
+    paid?: number | null
+    remitDate?: Date | null
+  }[],
+): Promise<number> {
+  const open = await prisma.denialSubmission.findMany({
+    where: { orgId, outcome: 'PENDING' },
+    select: {
+      id: true,
+      rowId: true,
+      sentAt: true,
+      row: { select: { claimNumber: true, billed: true } },
+    },
+  })
+  if (open.length === 0) return 0
+
+  const proposals = reconcileOutcomes({
+    open: open.map(s => ({
+      id: s.id,
+      rowId: s.rowId,
+      claimNumber: s.row.claimNumber,
+      sentAt: s.sentAt,
+      billed: money(s.row.billed),
+    })),
+    claims: claims.map(c => ({
+      claimNumber: c.claimNumber ?? null,
+      status: c.status,
+      paid: c.paid ?? null,
+      remitDate: c.remitDate ?? null,
+    })),
+  })
+  if (proposals.length === 0) return 0
+
+  const now = new Date()
+  await prisma.$transaction(
+    proposals.flatMap(p => [
+      prisma.denialSubmission.updateMany({
+        // outcome: PENDING in the where clause, not just the id: two imports
+        // racing must not overwrite an outcome a biller typed in between them.
+        // Theirs is the better evidence and it wins.
+        where: { id: p.submissionId, orgId, outcome: 'PENDING' },
+        data: {
+          outcome: p.outcome,
+          outcomeAt: p.outcomeAt,
+          amountRecovered: p.amountRecovered,
+          outcomeNote: p.note,
+          outcomeSource: 'REMITTANCE',
+          outcomeRecordedAt: now,
+        },
+      }),
+      prisma.denialRow.updateMany({
+        where: { id: p.rowId, orgId },
+        data: { status: 'PAID', lastTouchedAt: now, followUpAt: null },
+      }),
+    ]),
+  )
+
+  return proposals.length
+}
+
 export async function POST(request: Request) {
   const org = await requireOrg()
   if (!org) {
@@ -33,6 +115,22 @@ export async function POST(request: Request) {
   try {
     const parsed = await parseImport(read.upload)
     const { preview } = parsed
+
+    // The caller asked for one profile and detection confidently said another,
+    // so parseImport corrected it. Saving now would write a batch of a kind the
+    // page never showed — refuse until the customer has seen why. The client
+    // re-previews, reads the banner, and sends confirmProfile with the retry.
+    if (preview.profileSource === 'corrected' && !read.upload.confirmProfile) {
+      return NextResponse.json(
+        {
+          error: correctedProfileMessage(preview),
+          detectedProfile: preview.detectedProfile,
+          requestedProfile: preview.requestedProfile,
+          detectionEvidence: preview.detectionEvidence,
+        },
+        { status: 409 },
+      )
+    }
 
     if (preview.missing.length > 0) {
       return NextResponse.json({ error: missingColumnsMessage(preview) }, { status: 422 })
@@ -104,14 +202,24 @@ export async function POST(request: Request) {
       },
     })
 
+    // An A/R export answers appeals nobody has closed out yet. See
+    // lib/denials/reconcile.ts for why this only ever books wins.
+    const resolved = parsed.kind === 'claims' ? await applyOutcomes(org.orgId, parsed.rows) : 0
+
     return NextResponse.json({
       batchId: batch.id,
       kind: parsed.kind,
       imported: parsed.rows.length,
+      // Appeals this upload closed out on its own. Reported so the summary can
+      // say so — an outcome written silently is one the biller cannot check.
+      outcomesResolved: resolved,
       skipped: parsed.skipped,
       statusDerived: parsed.kind === 'claims' ? parsed.statusDerived : false,
       refusedColumns: preview.refusedColumns,
       unusedColumns: preview.unusedColumns,
+      // So the import summary can offer these as worklist items straight away,
+      // rather than leaving them to a banner on a page the customer may not open.
+      deniedWithCarc: preview.deniedWithCarc,
     })
   } catch (err) {
     if (err instanceof ClaimsFileError) {

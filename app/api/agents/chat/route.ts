@@ -6,9 +6,10 @@ import { GEMINI_AVAILABLE, getModel } from '@/lib/ai/gemini-client'
 import {
   executeWorkspaceTool,
   isWorkspaceTool,
-  resultCount,
   workspaceTools,
 } from '@/lib/ai/workspace-tools'
+import { buildTraceStep, type TraceStep } from '@/lib/ai/trace'
+import { openTurn, closeTurn } from '@/lib/ai/conversations'
 
 export const runtime = 'nodejs'
 
@@ -35,21 +36,30 @@ const SYSTEM_PROMPT = `You are the billing assistant inside Yeam, a denial-manag
 You answer questions about THIS workspace's own data — the denials and claims its owners uploaded. You have three tools:
 - workspace_overview — billed, paid, outstanding, denial rate, collection rate, amount at stake and amount recovered
 - top_denial_reasons — denial reasons ranked by money, with the CARC code, what it means and the remedy that applies
-- worklist_rows — individual denials in priority order, optionally filtered by payer
+- worklist_rows — individual denials in priority order, optionally filtered by payer, or searched by free text over the claim number, payer, CARC, CPT, ICD-10 and denial reason
 
 Rules:
 - ALWAYS call a tool before answering a question about numbers, denials or claims. Never answer from memory and never estimate.
+- When the user names a specific claim, code or payer, pass it to worklist_rows as its search argument rather than pulling a ranked list and reading it yourself. If the search comes back empty, say the workspace has no row matching that text — do not offer the nearest thing you saw as if it matched.
 - Report what the tools return. If a tool comes back empty, say the workspace has no such data yet and suggest importing a file on the Connect data page — do not invent an example.
 - If a result is marked partial, say the totals are a floor, not a total.
 - The data is de-identified by design: there are no patient names, member IDs or dates of birth, and you cannot look a patient up. Say so plainly if asked.
 - You can read but not change anything. If asked to mark a row worked, send an appeal or edit a claim, explain that it has to be done on the Worklist page.
 - Money in US dollars. Be brief and concrete — a biller wants the number and the next action, not a preamble.`
 
+/**
+ * The wire format for one turn.
+ *
+ * `tool_call` and `tool_result` carry the arguments the model chose and a step
+ * built from what actually came back, rather than a bare tool name the client
+ * maps to a canned string. That is what the reasoning trace under an answer is
+ * rendered from — see lib/ai/trace.ts.
+ */
 type SSEEvent =
-  | { type: 'routing'; message: string }
+  | { type: 'conversation'; id: string; title: string }
   | { type: 'agent'; name: string; message: string }
-  | { type: 'tool_call'; tool: string }
-  | { type: 'tool_result'; tool: string; count?: number }
+  | { type: 'tool_call'; tool: string; args: Record<string, unknown> }
+  | { type: 'tool_result'; step: TraceStep }
   | { type: 'text'; content: string }
   | { type: 'done'; agentName: string }
   | { type: 'error'; message: string }
@@ -62,7 +72,12 @@ export async function POST(req: NextRequest) {
     return new Response('This account is not part of a workspace yet.', { status: 403 })
   }
 
-  let body: { message?: string; history?: Array<{ role: string; content: string }> }
+  let body: {
+    message?: string
+    history?: Array<{ role: string; content: string }>
+    conversationId?: string
+    retry?: boolean
+  }
   try { body = await req.json() }
   catch { return new Response('Invalid JSON', { status: 400 }) }
 
@@ -87,11 +102,28 @@ export async function POST(req: NextRequest) {
         controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`))
       }
 
+      // Collected as tools return and written with the answer, so the rail can
+      // show how an answer was reached long after the stream closed.
+      const trace: TraceStep[] = []
+      let conversationId: string | null = null
+
       try {
         if (!GEMINI_AVAILABLE) {
           send({ type: 'error', message: 'GEMINI_API_KEY is not configured. Add it to .env.' })
           return
         }
+
+        // Before the model runs: a question that fails still belongs in history,
+        // and the client needs the id to keep the next turn in this thread.
+        const conversation = await openTurn(prisma, {
+          orgId: org.orgId,
+          userId: org.userId,
+          conversationId: body.conversationId,
+          message,
+          retry: body.retry,
+        })
+        conversationId = conversation.id
+        send({ type: 'conversation', id: conversation.id, title: conversation.title })
 
         send({ type: 'agent', name: AGENT_NAME, message: 'Reading your workspace...' })
 
@@ -114,20 +146,23 @@ export async function POST(req: NextRequest) {
           const responses: Part[] = await Promise.all(
             calls.map(async part => {
               const call = part.functionCall!
-              send({ type: 'tool_call', tool: call.name })
+              const args = (call.args ?? {}) as Record<string, unknown>
+              send({ type: 'tool_call', tool: call.name, args })
 
-              const result = isWorkspaceTool(call.name)
-                ? await executeWorkspaceTool(
-                    prisma,
-                    org.orgId,
-                    call.name,
-                    (call.args ?? {}) as Record<string, unknown>,
-                  )
+              const known = isWorkspaceTool(call.name)
+              const result = known
+                ? await executeWorkspaceTool(prisma, org.orgId, call.name, args)
                 // A hallucinated tool name is told to the model rather than
                 // thrown, so it can correct itself instead of the turn dying.
                 : { error: `No such tool: ${call.name}` }
 
-              send({ type: 'tool_result', tool: call.name, count: resultCount(result) })
+              // A call that never ran is left out of the trace: the trace is
+              // where an answer came from, and a refused name is not a source.
+              if (known) {
+                const step = buildTraceStep(call.name, args, result)
+                trace.push(step)
+                send({ type: 'tool_result', step })
+              }
               return { functionResponse: { name: call.name, response: result } } as Part
             }),
           )
@@ -155,6 +190,15 @@ export async function POST(req: NextRequest) {
 
         send({ type: 'done', agentName: AGENT_NAME })
 
+        // Awaited, unlike the activity log below: the client reloads this
+        // conversation from the database on the next mount, so a write that
+        // loses the race would make the answer vanish on refresh.
+        await closeTurn(prisma, conversationId, {
+          content: finalText,
+          trace,
+          agentName: AGENT_NAME,
+        })
+
         prisma.agentLog.create({
           data: {
             taskId: `chat-${Date.now()}`,
@@ -168,7 +212,20 @@ export async function POST(req: NextRequest) {
         }).catch(console.error)
 
       } catch (err) {
-        send({ type: 'error', message: err instanceof Error ? err.message : 'Unknown error occurred' })
+        const failure = err instanceof Error ? err.message : 'Unknown error occurred'
+        send({ type: 'error', message: failure })
+
+        // The question is already stored. Storing what came back keeps the
+        // history honest about the turns that failed, and a stored trace shows
+        // which tools had already run when it did.
+        if (conversationId) {
+          await closeTurn(prisma, conversationId, {
+            content: failure,
+            trace,
+            agentName: AGENT_NAME,
+            isError: true,
+          }).catch(console.error)
+        }
       } finally {
         controller.enqueue(encoder.encode('data: [DONE]\n\n'))
         controller.close()

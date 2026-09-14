@@ -1,17 +1,18 @@
 'use client'
 
-import { useState } from 'react'
-import { Check, Info, Loader2, PhoneOff, Search } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { Check, Info, Loader2, PhoneOff, RotateCcw, Search, Send } from 'lucide-react'
 import { trpc } from '@/lib/trpc/client'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
+import { OutcomePanel } from './OutcomePanel'
 
 /**
  * Everything about one denial that is not the draft itself.
  *
- * Three things live here, and each answers a specific complaint from working
+ * Four things live here, and each answers a specific complaint from working
  * billers about tools in this category:
  *
  *  1. WHY THIS IS RANKED HERE. A score nobody can interrogate gets ignored, and
@@ -21,6 +22,11 @@ import { Textarea } from '@/components/ui/textarea'
  *  3. THE LOOP. Status, follow-up date and a free-text note. Until these
  *     existed no row could leave DRAFTED, so nothing in the product could say
  *     what any of the work was worth.
+ *  4. WHAT CAME BACK. Every submission with its own ruling, recorded against
+ *     the attempt rather than the row so a first-level appeal that lost and a
+ *     second-level one that won both survive. This is the only data in the
+ *     product that no export could rebuild — see components/worklist/
+ *     OutcomePanel.tsx.
  */
 
 const STATUS_ACTIONS = [
@@ -60,6 +66,21 @@ export type RefinementView = {
   noAppealRights?: boolean
 }
 
+/**
+ * The note and follow-up date as they currently sit in the inputs, saved or not.
+ *
+ * `dirty` is what lets the caller distinguish "the biller typed this and has not
+ * saved it" from "this is what the row already holds" — so drafting writes only
+ * what actually changed and does not stamp lastTouchedAt on a row nobody edited.
+ */
+export type PendingWork = {
+  note: string
+  /** yyyy-mm-dd, straight from the date input. Empty means cleared. */
+  followUp: string
+  noteDirty: boolean
+  followUpDirty: boolean
+}
+
 export type RowDetailProps = {
   rowId: string
   status: string
@@ -71,6 +92,20 @@ export type RowDetailProps = {
   followUpAt: Date | string | null
   call: { verdict: string; label: string; detail: string }
   onChanged: () => void
+  /**
+   * Reports the note and follow-up date as they stand, on every keystroke.
+   *
+   * The draft button lives in the parent dialog, and until this existed it could
+   * not see a note the biller had typed but not saved — so the letter was drafted
+   * without the one fact that would have made it specific. See the draft mutation
+   * in server/trpc/router/worklist.ts, which persists what this reports.
+   */
+  onPendingChange?: (pending: PendingWork) => void
+}
+
+/** The Date a yyyy-mm-dd input means, pinned to midday so no timezone shifts it. */
+export function dateFromInput(value: string): Date | null {
+  return value ? new Date(`${value}T12:00:00`) : null
 }
 
 /** yyyy-mm-dd for a date input, in local time rather than UTC. */
@@ -93,6 +128,7 @@ export function RowDetail({
   followUpAt,
   call,
   onChanged,
+  onPendingChange,
 }: RowDetailProps) {
   const [draftNote, setDraftNote] = useState(note ?? '')
   const [followUp, setFollowUp] = useState(toDateInput(followUpAt))
@@ -112,6 +148,23 @@ export function RowDetail({
     setFollowUp(toDateInput(followUpAt))
   }
 
+  // Held in a ref so the effect below depends only on the values it reports. The
+  // effect sets state in the parent, so a caller that rebuilds this callback on
+  // every render would otherwise drive the two components round in a loop.
+  const report = useRef(onPendingChange)
+  useEffect(() => {
+    report.current = onPendingChange
+  }, [onPendingChange])
+
+  useEffect(() => {
+    report.current?.({
+      note: draftNote,
+      followUp,
+      noteDirty: draftNote.trim() !== (note ?? '').trim(),
+      followUpDirty: followUp !== toDateInput(followUpAt),
+    })
+  }, [draftNote, followUp, note, followUpAt])
+
   const utils = trpc.useUtils()
   const refresh = () => {
     void utils.worklist.invalidate()
@@ -121,9 +174,16 @@ export function RowDetail({
 
   const setStatus = trpc.worklist.setStatus.useMutation({ onSuccess: refresh })
   const setNote = trpc.worklist.setNote.useMutation({ onSuccess: refresh })
+  const saveFollowUp = trpc.worklist.setFollowUp.useMutation({ onSuccess: refresh })
 
-  const busy = setStatus.isPending || setNote.isPending
+  // Every attempt at getting a document to this payer, newest first. Reads as
+  // the row's history: what went out, when, and under what reference.
+  const submissions = trpc.worklist.submissions.useQuery({ rowId })
+
+  const busy = setStatus.isPending || setNote.isPending || saveFollowUp.isPending
   const noteChanged = draftNote.trim() !== (note ?? '').trim()
+  const followUpChanged = followUp !== toDateInput(followUpAt)
+  const sent = submissions.data ?? []
 
   return (
     <div className="space-y-4">
@@ -251,6 +311,31 @@ export function RowDetail({
               className="mt-1 w-40"
             />
           </div>
+          {/*
+            Saving a date on its own. Until this existed the only way to record
+            "they are reprocessing it, check back Friday" was to also click a
+            status button, which forced the row into a state that was not true.
+          */}
+          {followUpChanged && (
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={busy}
+              onClick={() =>
+                saveFollowUp.mutate({
+                  rowId,
+                  followUpAt: dateFromInput(followUp),
+                })
+              }
+            >
+              {saveFollowUp.isPending ? (
+                <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+              ) : (
+                <Check className="mr-1.5 h-3.5 w-3.5" aria-hidden="true" />
+              )}
+              Save follow-up
+            </Button>
+          )}
           <div className="flex flex-wrap gap-1.5">
             {STATUS_ACTIONS.map(action => (
               <Button
@@ -263,7 +348,7 @@ export function RowDetail({
                   setStatus.mutate({
                     rowId,
                     status: action.status,
-                    followUpAt: followUp ? new Date(`${followUp}T12:00:00`) : null,
+                    followUpAt: dateFromInput(followUp),
                   })
                 }
               >
@@ -278,11 +363,57 @@ export function RowDetail({
         <p className="mt-2 text-xs text-gray-500">
           Marking a row sent starts the clock the call guidance measures against.
         </p>
+
+        {/*
+          Reopening. An appeal that comes back denied is not finished work, and a
+          row that cannot leave a closed status is a row the biller has to track
+          somewhere else. Kept away from the three dispositions above because it
+          is an undo, not an outcome.
+        */}
+        {status !== 'TO_WORK' && (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => setStatus.mutate({ rowId, status: 'TO_WORK' })}
+            className="mt-2 inline-flex items-center gap-1.5 text-xs font-medium text-gray-600 underline hover:text-gray-900 disabled:opacity-50"
+          >
+            <RotateCcw className="h-3 w-3" aria-hidden="true" />
+            Reopen — the payer denied it again, or it went out too early
+          </button>
+        )}
       </div>
 
-      {(setStatus.error || setNote.error) && (
+      {/*
+        What has actually gone to the payer, the proof of it, and what came
+        back. The last part is the one the product was missing: a submission
+        with no outcome records that a letter went out, which is not the fact
+        anyone needed. Each attempt keeps its own ruling — a first-level appeal
+        that lost and a second-level one that won are both true.
+      */}
+      {sent.length > 0 && (
+        <div className="border-t border-gray-200 pt-3">
+          <p className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-gray-500">
+            <Send className="h-3.5 w-3.5" aria-hidden="true" />
+            Submitted
+          </p>
+          <ul className="mt-2 space-y-2">
+            {sent.map(s => (
+              <OutcomePanel
+                key={s.id}
+                submission={s}
+                onRecorded={() => {
+                  void submissions.refetch()
+                  refresh()
+                }}
+              />
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {(setStatus.error || setNote.error || saveFollowUp.error) && (
         <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700" role="alert">
-          {setStatus.error?.message ?? setNote.error?.message}
+          {setStatus.error?.message ?? setNote.error?.message ?? saveFollowUp.error?.message}
         </p>
       )}
     </div>

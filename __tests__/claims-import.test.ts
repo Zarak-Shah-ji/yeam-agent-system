@@ -203,12 +203,26 @@ describe('de-identification on the claims profile', () => {
 
 describe('detectProfile', () => {
   it('reads an A/R export as claims', () => {
-    expect(detectProfile(AR_HEADER)).toEqual({ profile: 'claims', confident: true })
+    expect(detectProfile(AR_HEADER)).toMatchObject({ profile: 'claims', confident: true })
+  })
+
+  it('names the columns that decided it', () => {
+    // The banner in the upload UI quotes these back. "This could be read either
+    // way" gives a customer nothing to check; "it has Allowed Amount and Paid
+    // Amount" tells them exactly where to look.
+    expect(detectProfile(AR_HEADER).evidence).toEqual(
+      expect.arrayContaining(['Paid Amount', 'Allowed Amount']),
+    )
+    expect(detectProfile(AR_HEADER).evidence).not.toContain('Paid Date')
   })
 
   it('reads a denials export as denials', () => {
     const denialHeader = ['Claim Number', 'Payer', 'Remit Date', 'CPT', 'CARC', 'Billed']
-    expect(detectProfile(denialHeader)).toEqual({ profile: 'denials', confident: true })
+    expect(detectProfile(denialHeader)).toMatchObject({
+      profile: 'denials',
+      confident: true,
+      evidence: ['CARC'],
+    })
   })
 
   it('does not read a denials export with a status column as claims', () => {
@@ -216,7 +230,7 @@ describe('detectProfile', () => {
     // row. Keying off status alone would import it as a snapshot and report a
     // 100% denial rate against a denominator of only the denied claims.
     const header = ['Claim Number', 'DOS', 'CPT', 'Billed', 'Status', 'CARC', 'Denial Reason']
-    expect(detectProfile(header)).toEqual({ profile: 'denials', confident: true })
+    expect(detectProfile(header)).toMatchObject({ profile: 'denials', confident: true })
   })
 
   it('does not read a "Paid Date" column as settlement money', () => {
@@ -227,6 +241,63 @@ describe('detectProfile', () => {
   it('does not let a patient-name column vote', () => {
     // "Patient Status" would otherwise read as a claim status column.
     expect(detectProfile(['Patient Name', 'CARC', 'Billed']).profile).toBe('denials')
+  })
+})
+
+describe('a confident detection overrules the box the file was dropped on', () => {
+  // The failure this exists to prevent: an A/R export dropped on the Connect
+  // page's "Denials export" box imported as denial rows, and the Claims page
+  // then truthfully but uselessly reported that no claims had been imported.
+  it('reads an A/R export as claims even when denials was asked for', async () => {
+    const parsed = await parseImport({
+      buffer: sampleFile('sample-ar-export.csv'),
+      filename: 'sample-ar-export.csv',
+      profile: 'denials',
+    })
+
+    expect(parsed.kind).toBe('claims')
+    expect(parsed.preview.profile).toBe('claims')
+    expect(parsed.preview.profileSource).toBe('corrected')
+    expect(parsed.preview.requestedProfile).toBe('denials')
+    expect(parsed.preview.detectionEvidence.length).toBeGreaterThan(0)
+    expect(parsed.rows).toHaveLength(1200)
+  })
+
+  it('honours the asked-for profile once the customer has confirmed it', async () => {
+    // Otherwise the "Read as" control would be inert on exactly the files it
+    // exists for — detection would re-correct the choice on every reparse.
+    const parsed = await parseImport({
+      buffer: sampleFile('sample-ar-export.csv'),
+      filename: 'sample-ar-export.csv',
+      profile: 'denials',
+      confirmProfile: true,
+    })
+
+    expect(parsed.kind).toBe('denials')
+    expect(parsed.preview.profileSource).toBe('chosen')
+    expect(parsed.preview.detectedProfile).toBe('claims')
+  })
+
+  it('leaves a genuinely ambiguous file on the profile that was asked for', async () => {
+    // Detection is not confident here, so it has no standing to overrule anyone.
+    const csv = Buffer.from('Claim Number,Payer,DOS,Billed,Status\nA1,Aetna,01/05/2026,100.00,Denied\n')
+    const parsed = await parseImport({ buffer: csv, filename: 'ambiguous.csv', profile: 'denials' })
+
+    expect(parsed.preview.profileSource).toBe('chosen')
+    expect(parsed.preview.detectionConfident).toBe(false)
+    expect(parsed.preview.profileConfident).toBe(false)
+  })
+
+  it('counts the denied claims an A/R export could put on the worklist', async () => {
+    const parsed = await parseImport({
+      buffer: sampleFile('sample-ar-export.csv'),
+      filename: 'sample-ar-export.csv',
+    })
+
+    if (parsed.kind !== 'claims') throw new Error('expected claims')
+    const denied = parsed.rows.filter(r => r.status === 'DENIED' && r.carc)
+    expect(parsed.preview.deniedWithCarc).toBe(denied.length)
+    expect(parsed.preview.deniedWithCarc).toBeGreaterThan(0)
   })
 })
 

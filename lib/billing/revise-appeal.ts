@@ -20,6 +20,17 @@ export interface ReviseAppealInput {
   instruction: string
   /** Earlier turns, oldest first, so "make that shorter too" resolves. */
   history?: ReviseTurn[]
+  /**
+   * Facts about the claim that stand outside the conversation — in practice the
+   * biller's note and their follow-up date.
+   *
+   * A revision used to see nothing but the letter and the instruction, so a note
+   * written after the first draft could not reach the document without the
+   * biller retyping it into the instruction box. Passed on every revision rather
+   * than only the first, because the model is rewriting the whole letter each
+   * time and would otherwise drop what the previous version drew from the note.
+   */
+  context?: string
 }
 
 export interface ReviseAppealResult {
@@ -61,6 +72,7 @@ export async function reviseAppealLetter({
   letter,
   instruction,
   history = [],
+  context,
 }: ReviseAppealInput): Promise<ReviseAppealResult> {
   if (!GEMINI_AVAILABLE) {
     throw new Error('Appeal drafting is not configured on this deployment (missing GEMINI_API_KEY).')
@@ -75,6 +87,7 @@ export async function reviseAppealLetter({
 
   const prompt =
     `Today's date is ${todayLong()}. Keep the letter dated today.\n\n` +
+    (context?.trim() ? `--- STANDING CONTEXT ---\n${context.trim()}\n\n` : '') +
     (priorTurns ? `--- EARLIER IN THIS CONVERSATION ---\n${priorTurns}\n\n` : '') +
     `--- CURRENT DRAFT ---\n${letter.trim()}\n\n` +
     `--- REQUESTED CHANGE ---\n${instruction.trim()}`

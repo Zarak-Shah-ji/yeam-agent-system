@@ -3,6 +3,7 @@ import type { PrismaClient } from '@prisma/client'
 import { loadFacts } from '@/lib/insights/facts'
 import { overview, payerScorecard, topCarcs, payerOf } from '@/lib/insights/aggregate'
 import { triageRow, type ClaimRow } from '@/lib/denials/triage'
+import { matchesSearch, normalizeQuery } from '@/lib/denials/search'
 import { scoreRow } from '@/lib/denials/score'
 
 /**
@@ -72,6 +73,14 @@ export const workspaceTools: FunctionDeclarationsTool[] = [
               type: SchemaType.STRING,
               description: 'Optional. Only rows for this payer name.',
             },
+            search: {
+              type: SchemaType.STRING,
+              description:
+                'Optional. Free text matched against the claim number, payer, CARC code, CPT, ' +
+                'ICD-10 and denial reason. Use it when the user names a specific claim or code ' +
+                'rather than asking for a ranking. A search also looks at settled rows, so a ' +
+                'claim that was already paid or written off is still found.',
+            },
             limit: {
               type: SchemaType.NUMBER,
               description: `How many rows to return. Default 10, max ${MAX_ROWS}.`,
@@ -95,15 +104,6 @@ function clampLimit(raw: unknown, fallback = 10): number {
   const n = Number(raw)
   if (!Number.isFinite(n) || n < 1) return fallback
   return Math.min(Math.floor(n), MAX_ROWS)
-}
-
-/** Row count in the result, for the "read N rows" line the UI shows mid-stream. */
-export function resultCount(result: Record<string, unknown>): number | undefined {
-  for (const key of ['reasons', 'rows']) {
-    const value = result[key]
-    if (Array.isArray(value)) return value.length
-  }
-  return undefined
 }
 
 /**
@@ -143,11 +143,22 @@ export async function executeWorkspaceTool(
       const { denials, claims } = await loadFacts(prisma, orgId)
 
       const wanted = typeof args.payer === 'string' ? payerOf(args.payer).toLowerCase() : null
-      const candidates = wanted
+      const byPayer = wanted
         ? denials.filter(d => payerOf(d.payer).toLowerCase() === wanted)
         : denials
 
-      const open = candidates.filter(d => d.status !== 'PAID' && d.status !== 'DEAD')
+      // The same match the Worklist search box runs, so the assistant and the
+      // table can never disagree about whether a claim number exists.
+      const search = normalizeQuery(typeof args.search === 'string' ? args.search : null)
+      const candidates = search ? byPayer.filter(d => matchesSearch(d, search)) : byPayer
+
+      // Ranking questions are about what is left to do, so settled rows are
+      // noise. Looking a claim up is the opposite: "we already wrote that one
+      // off" is the answer, and hiding the row would have the assistant report
+      // it as missing instead.
+      const open = search
+        ? candidates
+        : candidates.filter(d => d.status !== 'PAID' && d.status !== 'DEAD')
 
       const scored = open.map(denial => {
         const base = triageRow(denial as ClaimRow, today)
@@ -168,6 +179,7 @@ export async function executeWorkspaceTool(
         return {
           claimNumber: denial.claimNumber ?? null,
           payer: payerOf(denial.payer),
+          status: denial.status,
           carc: base.carc,
           reason: base.carcLabel,
           billed: base.billed,
@@ -184,7 +196,10 @@ export async function executeWorkspaceTool(
 
       return {
         rows: scored.slice(0, clampLimit(args.limit)),
-        totalOpen: open.length,
+        // Named for what it counts: everything the filters left, which is every
+        // open row when nothing was searched for and every match when it was.
+        totalMatched: open.length,
+        searchedFor: search || undefined,
         // Present so the model can answer "who is worst" without a second call.
         payers: wanted ? undefined : payerScorecard(claims, denials, today).slice(0, 5),
       }

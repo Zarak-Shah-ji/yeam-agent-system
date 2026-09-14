@@ -208,6 +208,16 @@ export type ScoreFactor = {
 /** Coarse grouping, for filters and colour. The number ranks; the band explains. */
 export type PriorityBand = 'now' | 'soon' | 'later' | 'parked'
 
+/**
+ * The bands in the order a reader meets them — most urgent first.
+ *
+ * Exported because anything that groups by band has to agree on this order, and
+ * the alternative is each caller writing the sequence out again. A chart whose
+ * categories ran in a different order from the queue underneath it would be
+ * read as a different fact about the same rows.
+ */
+export const BANDS = ['now', 'soon', 'later', 'parked'] as const satisfies readonly PriorityBand[]
+
 export const BAND_LABEL: Record<PriorityBand, string> = {
   now: 'Work now',
   soon: 'This week',

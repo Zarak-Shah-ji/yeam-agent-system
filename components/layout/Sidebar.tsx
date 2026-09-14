@@ -9,6 +9,7 @@ import {
   BarChart3,
   Building2,
   PlugZap,
+  Settings,
   ChevronLeft,
   ChevronRight,
   LogOut,
@@ -34,6 +35,7 @@ const navItems = [
   { href: '/analytics', label: 'Analytics', icon: BarChart3 },
   { href: '/payers', label: 'Payers', icon: Building2 },
   { href: '/connect', label: 'Connect data', icon: PlugZap },
+  { href: '/settings', label: 'Settings', icon: Settings },
 ]
 
 // The icon is chosen by the `dark:` variant rather than by React state so it
@@ -73,7 +75,7 @@ export function Sidebar() {
       {/* Header: brand + collapse toggle */}
       <div className="flex h-14 shrink-0 items-center justify-between border-b border-gray-200 px-3">
         {isOpen && (
-          <span className="font-semibold text-gray-900 text-base">Yeam.ai</span>
+          <span className="font-semibold text-gray-900 text-base">Yeam</span>
         )}
         <button
           onClick={toggle}

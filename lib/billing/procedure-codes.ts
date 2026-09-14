@@ -404,6 +404,24 @@ const GENERIC: ProcedureProfile = {
   diagnoses: ['I10', 'E11.9'],
 }
 
+/**
+ * Is this code actually in the table above?
+ *
+ * profileFor() never says "I don't know" — it falls back through
+ * FAMILY_FALLBACKS to GENERIC, whose diagnoses are ['I10', 'E11.9']. That is
+ * correct for its job, which is generating plausible seed data. It is wrong for
+ * any caller asking whether a real claim's codes agree, because an unknown CPT
+ * would come back paired with hypertension and diabetes and a coder would be
+ * told their diagnosis is inconsistent on the strength of it.
+ *
+ * So: anything judging a customer's own coding checks this FIRST, and stays
+ * silent when it is false. Exact hits only — a family fallback is a guess about
+ * a code range, not knowledge of the code.
+ */
+export function isKnownProcedure(procCode: string): boolean {
+  return Boolean(PROCEDURES[procCode.trim().toUpperCase()])
+}
+
 export function profileFor(procCode: string): ProcedureProfile {
   const code = procCode.trim().toUpperCase()
   if (PROCEDURES[code]) return PROCEDURES[code]

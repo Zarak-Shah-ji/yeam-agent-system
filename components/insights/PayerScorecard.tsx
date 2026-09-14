@@ -5,8 +5,10 @@ import { Badge } from '@/components/ui/badge'
 import { Card, CardContent } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { ViewToggle, useAnalyticsView } from '@/components/charts/ViewToggle'
 import { EmptyCard } from './EmptyCard'
 import { NoWorkspace, isNoWorkspace } from './NoWorkspace'
+import { PayerCharts } from './PayerCharts'
 
 const usd = new Intl.NumberFormat('en-US', {
   style: 'currency',
@@ -31,6 +33,7 @@ function pct(value: number | null): string {
  */
 export function PayerScorecard() {
   const payers = trpc.insights.payers.useQuery()
+  const [view, setView] = useAnalyticsView()
 
   if (isNoWorkspace(payers.error)) return <NoWorkspace />
 
@@ -60,6 +63,10 @@ export function PayerScorecard() {
 
   return (
     <div className="space-y-3">
+      <div className="flex justify-end">
+        <ViewToggle value={view} onChange={setView} />
+      </div>
+
       {!hasSnapshot && (
         <p className="rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-900">
           These rows come from your denials only. Import an A/R export to add denial rates,
@@ -67,82 +74,86 @@ export function PayerScorecard() {
         </p>
       )}
 
-      <Card>
-        <CardContent className="overflow-x-auto p-0">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Payer</TableHead>
-                <TableHead className="text-right">Claims</TableHead>
-                <TableHead className="text-right">Billed</TableHead>
-                <TableHead className="text-right">Collected</TableHead>
-                <TableHead className="text-right">Denial rate</TableHead>
-                <TableHead className="text-right">Days to pay</TableHead>
-                <TableHead>Top reason</TableHead>
-                <TableHead className="text-right">At stake</TableHead>
-                <TableHead className="text-right">Window</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {rows.map(row => (
-                <TableRow key={row.payer}>
-                  <TableCell className="font-medium text-gray-900">{row.payer}</TableCell>
-                  <TableCell className="text-right">{row.claims || '—'}</TableCell>
-                  <TableCell className="text-right">
-                    {row.claims ? usd.format(row.billed) : '—'}
-                  </TableCell>
-                  <TableCell className="text-right">
-                    {row.claims ? (
-                      <>
-                        {usd.format(row.paid)}
-                        <span className="ml-1 text-xs text-gray-400">
-                          {pct(row.grossCollectionRate)}
-                        </span>
-                      </>
-                    ) : (
-                      '—'
-                    )}
-                  </TableCell>
-                  <TableCell
-                    className={`text-right ${(row.denialRate ?? 0) > 10 ? 'font-semibold text-red-600' : ''}`}
-                  >
-                    {pct(row.denialRate)}
-                  </TableCell>
-                  <TableCell className="text-right">
-                    {row.medianDaysToPay === null ? '—' : `${row.medianDaysToPay}d`}
-                  </TableCell>
-                  <TableCell className="max-w-[14rem]">
-                    {row.topCarc ? (
-                      <span className="text-sm text-gray-600" title={row.topCarc.label}>
-                        <span className="font-mono text-xs">{row.topCarc.carc}</span>{' '}
-                        <span className="text-gray-400">×{row.topCarc.count}</span>
-                      </span>
-                    ) : (
-                      <span className="text-gray-400">—</span>
-                    )}
-                  </TableCell>
-                  <TableCell className="text-right font-medium">
-                    {row.atStake > 0 ? usd.format(row.atStake) : '—'}
-                    {row.openDenials > 0 && (
-                      <span className="ml-1 text-xs text-gray-400">{row.openDenials} open</span>
-                    )}
-                  </TableCell>
-                  <TableCell className="text-right">
-                    <Badge variant={row.filingWindowSource === 'payer' ? 'secondary' : 'outline'}>
-                      {row.filingWindowDays}d
-                      {row.filingWindowSource === 'default' && (
-                        <span title="Filing window estimated — this payer is not in the rule set">
-                          ~
-                        </span>
-                      )}
-                    </Badge>
-                  </TableCell>
+      {view === 'chart' ? (
+        <PayerCharts rows={rows} />
+      ) : (
+        <Card>
+          <CardContent className="overflow-x-auto p-0">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Payer</TableHead>
+                  <TableHead className="text-right">Claims</TableHead>
+                  <TableHead className="text-right">Billed</TableHead>
+                  <TableHead className="text-right">Collected</TableHead>
+                  <TableHead className="text-right">Denial rate</TableHead>
+                  <TableHead className="text-right">Days to pay</TableHead>
+                  <TableHead>Top reason</TableHead>
+                  <TableHead className="text-right">At stake</TableHead>
+                  <TableHead className="text-right">Window</TableHead>
                 </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </CardContent>
-      </Card>
+              </TableHeader>
+              <TableBody>
+                {rows.map(row => (
+                  <TableRow key={row.payer}>
+                    <TableCell className="font-medium text-gray-900">{row.payer}</TableCell>
+                    <TableCell className="text-right">{row.claims || '—'}</TableCell>
+                    <TableCell className="text-right">
+                      {row.claims ? usd.format(row.billed) : '—'}
+                    </TableCell>
+                    <TableCell className="text-right">
+                      {row.claims ? (
+                        <>
+                          {usd.format(row.paid)}
+                          <span className="ml-1 text-xs text-gray-400">
+                            {pct(row.grossCollectionRate)}
+                          </span>
+                        </>
+                      ) : (
+                        '—'
+                      )}
+                    </TableCell>
+                    <TableCell
+                      className={`text-right ${(row.denialRate ?? 0) > 10 ? 'font-semibold text-red-600' : ''}`}
+                    >
+                      {pct(row.denialRate)}
+                    </TableCell>
+                    <TableCell className="text-right">
+                      {row.medianDaysToPay === null ? '—' : `${row.medianDaysToPay}d`}
+                    </TableCell>
+                    <TableCell className="max-w-[14rem]">
+                      {row.topCarc ? (
+                        <span className="text-sm text-gray-600" title={row.topCarc.label}>
+                          <span className="font-mono text-xs">{row.topCarc.carc}</span>{' '}
+                          <span className="text-gray-400">×{row.topCarc.count}</span>
+                        </span>
+                      ) : (
+                        <span className="text-gray-400">—</span>
+                      )}
+                    </TableCell>
+                    <TableCell className="text-right font-medium">
+                      {row.atStake > 0 ? usd.format(row.atStake) : '—'}
+                      {row.openDenials > 0 && (
+                        <span className="ml-1 text-xs text-gray-400">{row.openDenials} open</span>
+                      )}
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <Badge variant={row.filingWindowSource === 'payer' ? 'secondary' : 'outline'}>
+                        {row.filingWindowDays}d
+                        {row.filingWindowSource === 'default' && (
+                          <span title="Filing window estimated — this payer is not in the rule set">
+                            ~
+                          </span>
+                        )}
+                      </Badge>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </CardContent>
+        </Card>
+      )}
 
       <p className="text-xs text-gray-400">
         Denial and collection rates come from your A/R snapshot. At-stake comes from the worklist.

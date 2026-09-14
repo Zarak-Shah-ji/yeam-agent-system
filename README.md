@@ -24,8 +24,47 @@ file is the whole integration.
    code: an appeal letter, a corrected-claim transmittal, a reconsideration or a
    reprocessing request. Sending an appeal where the payer wanted a corrected
    claim is the first mistake a billing manager spots.
-4. **Claims / Analytics / Payers** — the A/R snapshot as denominator: aging,
+4. **Send** — where that payer actually takes this instrument (portal, fax or
+   mail), the form they refuse submissions without, and what to enclose. Fill
+   the patient details, take the packet, then record the channel, the date and
+   the confirmation number. That last field is the proof of timely filing.
+5. **Record what came back** — the ruling, the date, the amount and the code
+   the payer denied the appeal under. Kept on the *attempt*, not the claim, so a
+   first-level appeal that lost and a second-level one that won both survive.
+6. **Claims / Analytics / Payers** — the A/R snapshot as denominator: aging,
    collection rate, denial rate by payer, and which reason codes cost the most.
+
+### The outcome ledger is the only thing here that cannot be re-imported
+
+Everything else in this app is derived from a file the practice already has. Run
+the import again tomorrow and aging, denial rate and the worklist all rebuild
+themselves. The one exception is what the payers actually did:
+
+```
+payer × reason code × instrument  →  win rate · dollars recovered · days to answer
+```
+
+That table is assembled one determination at a time from this workspace's own
+history. It is not in any provider manual, any clearinghouse feed or any model's
+training data, because payers do not publish how they adjudicate appeals and it
+changes every quarter. If it is lost there is no file to restore it from.
+
+Which is why the counting rules are conservative and pinned by tests
+(`__tests__/appeal-outcomes.test.ts`). A pending appeal is not a loss. A partial
+payment is a win, because in appeals it usually is one. A payer that never
+answered has not ruled, and scoring its silence as a denial would blame the
+argument. A win rate that is quietly wrong is worse than none at all: a biller
+who reads "CO-97 to Cigna never works" stops appealing it, loses money that was
+recoverable, and never finds out.
+
+**Most of it fills itself in.** Left to manual entry the wins get recorded —
+money arriving is memorable — and the losses do not, which produces a dataset
+that is not thin but confidently wrong. So an A/R export closes appeals out on
+its own: a claim that was appealed in March and shows paid on the April snapshot,
+with a remit dated *after* the appeal went out, is an appeal that worked.
+`lib/denials/reconcile.ts` does this and never proposes a loss — a claim still
+reading DENIED on a later snapshot is far more likely a line the payer has not
+revisited than a ruling. Those stay open, and the worklist says how many.
 
 ### De-identification is a schema promise, not a policy
 
@@ -35,6 +74,19 @@ the customer-data tables, so a parser bug cannot quietly persist one.
 cannot be opted out of. Widening the set of fields that are read is a legal
 change, not a schema change.
 
+That is also why a drafted letter arrives with `[PATIENT NAME]` and `[MEMBER ID]`
+still in it. **The send step fills them in the browser.** `lib/appeals/merge.ts`
+is pure and runs client-side; the completed letter is printed from the page it
+was merged in, and `worklist.recordSubmission` takes a `.strict()` input that
+names no patient field, so an identifier cannot reach the server even by
+accident. What is stored is the channel, the date and the confirmation number —
+the attempt, never the person.
+
+The practice's own details (name, NPI, TIN, address) *are* stored, on
+`Organization`. An NPI identifies the billing provider, not a patient. They are
+merged into the draft server-side, which is what stopped the model inventing a
+plausible-looking practice name for the signature block.
+
 ---
 
 ## Architecture
@@ -42,7 +94,7 @@ change, not a schema change.
 ```
 app/
   (auth)/              login, signup
-  (dashboard)/         worklist, claims, analytics, payers, connect
+  (dashboard)/         worklist, claims, analytics, payers, connect, settings
   (public)/            /appeals and /how-we-connect — passcode-gated, for
                        sharing with an outside reviewer or prospect
   api/
@@ -53,13 +105,16 @@ app/
 
 lib/
   imports/             file reading, column mapping, de-identification
-  denials/             CARC triage, priority scoring, RARC refinement, drafting
+  denials/             CARC triage, priority scoring, RARC refinement, drafting,
+                       outcome tallies (outcomes.ts) and the A/R reconciler
   insights/            read-time aggregation (facts.ts loads, aggregate.ts computes)
   billing/             the domain knowledge: playbooks, payers, procedure codes,
-                       and the drafting prompt
+                       submission routing, and the drafting prompt
+  appeals/             the passcode portal, and the browser-side letter merge
   ai/                  Gemini client and the assistant's tool surface
 
-server/trpc/router/     worklist, insights, imports, connections, activity, auth
+server/trpc/router/     worklist, insights, imports, connections, settings,
+                        activity, auth
 ```
 
 ### Two rules the codebase is built around
@@ -176,3 +231,14 @@ Vercel + Supabase. See [DEPLOY.md](./DEPLOY.md).
 - **There is no invite flow and roles are not enforced.** `User.role` exists and
   the workspace creator is made `ADMIN`, but a billing company cannot yet add
   its second employee.
+- **Yeam does not transmit anything.** The send step produces the packet, names
+  the destination and records the submission; a human still uploads it to the
+  portal or sends the fax. Automating the transmission means PHI transiting the
+  server and a signed BAA with whichever vendor carries it — fax is the only
+  payer channel that could be automated at all, since provider-facing portals
+  have no public API. Treat it as a business decision, not a sprint.
+- **`lib/billing/payers.ts` is a Texas panel** and the appeals addresses in it
+  are demo data. `resolveDestination` (`lib/billing/submission.ts`) will offer a
+  payer's national portal without asserting a state-specific address, and
+  resolves to `unknown` rather than guessing. A workspace's own entry under
+  Settings → Payer destinations beats the directory every time.

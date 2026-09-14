@@ -550,3 +550,145 @@ body {
   background: var(--color-gray-300);
   border-radius: 999px;
 }
+
+/* ── Printing one letter ─────────────────────────────────────────────────────
+ *
+ * The Send panel's "Print / Save as PDF" is the app's only document export, and
+ * it is deliberately the browser's own rather than a PDF library: the merged
+ * letter contains the patient's name and member ID, which are typed in the
+ * browser and must not be handed to anything that would ship them elsewhere.
+ * Rendering to a container the print sheet keeps — and the screen hides — puts
+ * the whole export inside the page the identifiers already live in.
+ *
+ * A popup window would have been the obvious alternative and is worse: a blocked
+ * popup fails silently, and the letter would have to be passed across a window
+ * boundary to get there.
+ */
+#yeam-print-letter {
+  display: none;
+}
+
+@media print {
+  body > *:not(#yeam-print-letter) {
+    display: none !important;
+  }
+
+  #yeam-print-letter {
+    display: block !important;
+    white-space: pre-wrap;
+    font-family: var(--font-geist-sans, Georgia, serif);
+    font-size: 11pt;
+    line-height: 1.5;
+    color: #000;
+    background: #fff;
+    padding: 0;
+    margin: 0;
+  }
+
+  @page {
+    margin: 1in;
+  }
+}
+
+/* ── The auth aurora ─────────────────────────────────────────────────────────
+ *
+ * The background of /login and /signup. Three oversized colour fields drift on
+ * mutually prime loops (13s / 17s / 19s), so the composite takes ~70 minutes to
+ * land back where it started — nobody watching it ever sees the loop seam.
+ *
+ * These ran at 29s / 37s / 43s first and read as a still image: a soft gradient
+ * edge crossing ~20px per second is below the threshold where you notice motion
+ * at all. The travel below is also wider than it was; both changes are there to
+ * put the movement above that threshold rather than merely above zero.
+ *
+ * Each field is a radial-gradient that fades to transparent, not a blurred
+ * solid. `filter: blur()` on a 70vmax box is a full-viewport raster every
+ * frame; a gradient buys the same softness for the cost of a paint. Only
+ * `transform` is animated, so the whole thing lives on the compositor and
+ * never touches layout or style recalc.
+ *
+ * They blend with `screen` over the navy base, which is why the palette below
+ * looks too saturated read as flat hex — screen over #060E1B lands them in the
+ * right place.
+ */
+@keyframes aurora-drift-a {
+  0%,
+  100% {
+    transform: translate3d(-22%, -15%, 0) scale(1);
+  }
+  50% {
+    transform: translate3d(20%, 13%, 0) scale(1.26);
+  }
+}
+
+@keyframes aurora-drift-b {
+  0%,
+  100% {
+    transform: translate3d(24%, 11%, 0) scale(1.18);
+  }
+  50% {
+    transform: translate3d(-18%, -19%, 0) scale(0.9);
+  }
+}
+
+@keyframes aurora-drift-c {
+  0%,
+  100% {
+    transform: translate3d(-13%, 21%, 0) scale(0.92);
+  }
+  50% {
+    transform: translate3d(17%, -15%, 0) scale(1.32);
+  }
+}
+
+.aurora-field {
+  position: absolute;
+  border-radius: 9999px;
+  mix-blend-mode: screen;
+  will-change: transform;
+  animation-timing-function: cubic-bezier(0.44, 0, 0.56, 1);
+  animation-iteration-count: infinite;
+}
+
+/* Film grain. Gradients this wide band badly on 8-bit panels; a few percent of
+   noise over the top dithers the steps away. Tiled at 180px so the pattern
+   itself is never legible as a texture. */
+.aurora-grain {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  background-size: 180px 180px;
+  opacity: 0.035;
+  mix-blend-mode: overlay;
+}
+
+/* The card arrives a beat after the background, so the aurora reads as the
+   place the page already was rather than something loading in behind it. */
+@keyframes auth-card-in {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 12px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+.auth-card-in {
+  animation: auth-card-in 0.7s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/* Motion is decoration here, never information: with it suppressed the fields
+   simply hold their opening position, which is already a composed frame. */
+@media (prefers-reduced-motion: reduce) {
+  .aurora-field,
+  .auth-card-in {
+    animation: none !important;
+  }
+}
+
+/* The brand typeface (Plus Jakarta Sans, loaded in app/layout.tsx). Worn by
+   /login and /signup so the app's front door matches yeam.ai; the dashboard
+   behind it stays on Geist. */
+.font-brand {
+  font-family: var(--font-brand), ui-sans-serif, system-ui, -apple-system, sans-serif;
+}

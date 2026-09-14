@@ -266,6 +266,17 @@ export function buildClaimRows(
 
 export type ImportProfile = 'denials' | 'claims'
 
+export type ProfileDetection = {
+  profile: ImportProfile
+  confident: boolean
+  /**
+   * The columns that decided it. Naming them is what lets the upload UI say
+   * "this has Paid and Allowed columns, so it is an A/R export" instead of the
+   * unactionable "this could be read either way".
+   */
+  evidence: string[]
+}
+
 /**
  * Guess which kind of export this is.
  *
@@ -278,26 +289,25 @@ export type ImportProfile = 'denials' | 'claims'
  * Date columns are excluded from the money test, so a "Paid Date" on a denials
  * export does not read as a payment amount.
  *
- * The guess only pre-selects the choice in the upload UI. The customer confirms
- * it, because getting it wrong in the other direction puts paid claims on the
- * worklist.
+ * A confident answer here beats the profile the customer dropped the file on —
+ * see parseImport. An A/R export imported through the denials box lands as
+ * denial rows, and the Claims page then correctly reports that no claims have
+ * been imported, which is a very hard thing to work out from the outside.
  */
-export function detectProfile(headers: string[]): {
-  profile: ImportProfile
-  confident: boolean
-} {
+export function detectProfile(headers: string[]): ProfileDetection {
   const visible = headers.filter(h => h && !isIgnorableColumn(h))
-  const has = (pattern: RegExp) => visible.some(h => pattern.test(h))
-  const hasAmount = (pattern: RegExp) =>
-    visible.some(h => pattern.test(h) && !/\bdate\b/i.test(h))
+  const named = (pattern: RegExp) => visible.filter(h => pattern.test(h)).map(h => h.trim())
+  const amounts = (pattern: RegExp) =>
+    visible.filter(h => pattern.test(h) && !/\bdate\b/i.test(h)).map(h => h.trim())
 
-  const hasPaid = hasAmount(/\b(paid|payment|reimburse\w*|pmt)\b/i)
-  const hasAllowed = hasAmount(/\b(allowed|allowable|approved\s*amount|contract(ed)?\s*(amount|rate))\b/i)
-  const hasCarc = has(/\b(carc|reason\s*code|adjustment\s*code|denial\s*code)\b/i)
-  const hasStatus = has(/\b(claim\s*status|status|disposition)\b/i)
+  const paid = amounts(/\b(paid|payment|reimburse\w*|pmt)\b/i)
+  const allowed = amounts(/\b(allowed|allowable|approved\s*amount|contract(ed)?\s*(amount|rate))\b/i)
+  const carc = named(/\b(carc|reason\s*code|adjustment\s*code|denial\s*code)\b/i)
+  const status = named(/\b(claim\s*status|status|disposition)\b/i)
 
-  if (hasPaid || hasAllowed) return { profile: 'claims', confident: true }
-  if (hasCarc) return { profile: 'denials', confident: true }
-  if (hasStatus) return { profile: 'claims', confident: false }
-  return { profile: 'denials', confident: false }
+  const money = [...new Set([...paid, ...allowed])]
+  if (money.length > 0) return { profile: 'claims', confident: true, evidence: money }
+  if (carc.length > 0) return { profile: 'denials', confident: true, evidence: carc }
+  if (status.length > 0) return { profile: 'claims', confident: false, evidence: status }
+  return { profile: 'denials', confident: false, evidence: [] }
 }

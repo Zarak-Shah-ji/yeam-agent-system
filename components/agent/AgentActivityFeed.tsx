@@ -42,11 +42,13 @@ export function AgentActivityFeed() {
   }, [refetch])
 
   return (
-    <div className="flex h-full flex-col">
-      <div className="flex items-center gap-2 border-b border-gray-200 px-3 py-2.5">
-        <Bot className="h-4 w-4 text-blue-500" />
-        <span className="text-sm font-medium text-gray-700">Agent Activity</span>
-        <span className="ml-auto h-2 w-2 rounded-full bg-green-400 animate-pulse" title="Live" />
+    // No header of its own: this is the Activity tab of the agent rail, and the
+    // tab already names it. It used to be a standalone panel with its own
+    // title bar behind a separate Bot toggle.
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="flex items-center gap-1.5 border-b border-gray-100 px-3 py-1.5 text-xs text-gray-400">
+        <span className="h-1.5 w-1.5 rounded-full bg-green-400 animate-pulse" />
+        <span>Live · refreshes every 10s</span>
       </div>
 
       <div className="flex-1 overflow-y-auto divide-y divide-gray-100">

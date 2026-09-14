@@ -1,12 +1,13 @@
 'use client'
 
-import { useState } from 'react'
+import { useCallback, useState } from 'react'
 import { Copy, Loader2, Send } from 'lucide-react'
 import { trpc } from '@/lib/trpc/client'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
-import { RowDetail } from './RowDetail'
+import { RowDetail, dateFromInput, type PendingWork } from './RowDetail'
+import { SendPanel } from './SendPanel'
 import type { WorklistRow } from './types'
 
 /**
@@ -23,6 +24,26 @@ const SUGGESTIONS = [
   'Cite the payer policy',
   'Lead with the dollar amount',
 ]
+
+/**
+ * The chip that appears once there is a note on the row.
+ *
+ * The first draft already builds on the note, so this is for the ordinary case
+ * where the order was the other way round: draft the letter, call the payer,
+ * learn the real reason. The note reaches the model as standing context on every
+ * revision regardless — this just spares the biller from having to phrase an
+ * instruction to trigger one.
+ */
+const REWORK_AROUND_NOTE =
+  'Rework this around what my note on this claim says. Where the note and the ' +
+  'denial reason disagree, argue what the note says.'
+
+const EMPTY_PENDING: PendingWork = {
+  note: '',
+  followUp: '',
+  noteDirty: false,
+  followUpDirty: false,
+}
 
 /**
  * Work one denial: see why it is ranked here, what the remittance really said,
@@ -47,6 +68,34 @@ export function DraftDialog({
 }) {
   const [instruction, setInstruction] = useState('')
   const rowId = row?.id ?? null
+
+  /*
+    What the biller has typed into RowDetail but may not have saved.
+
+    Drafting and revising both send it, and the server writes it before it calls
+    the model. Without this the sequence that matters most — type what the payer
+    said, then click Draft — threw the note away and produced the generic letter.
+
+    Compared field by field before storing so a re-render of the child cannot
+    loop through this state and back.
+  */
+  const [pending, setPending] = useState<PendingWork>(EMPTY_PENDING)
+  const onPendingChange = useCallback((next: PendingWork) => {
+    setPending(prev =>
+      prev.note === next.note &&
+      prev.followUp === next.followUp &&
+      prev.noteDirty === next.noteDirty &&
+      prev.followUpDirty === next.followUpDirty
+        ? prev
+        : next,
+    )
+  }, [])
+
+  /** Only what actually changed: an unedited row must not be stamped as touched. */
+  const pendingWork = () => ({
+    ...(pending.noteDirty ? { note: pending.note } : {}),
+    ...(pending.followUpDirty ? { followUpAt: dateFromInput(pending.followUp) } : {}),
+  })
 
   const drafts = trpc.worklist.drafts.useQuery(
     { rowId: rowId ?? '' },
@@ -91,6 +140,7 @@ export function DraftDialog({
             followUpAt={row.followUpAt}
             call={row.call}
             onChanged={onDrafted}
+            onPendingChange={onPendingChange}
           />
         )}
 
@@ -102,10 +152,15 @@ export function DraftDialog({
               Yeam will pick the right instrument for this denial code — an appeal, a corrected
               claim or a reprocessing request — and draft it.
             </p>
+            <p className="mt-1 text-xs text-gray-500">
+              {pending.note.trim() !== ''
+                ? 'Your note and follow-up date are saved and written into the draft.'
+                : 'Add a note above first if the payer told you something the export does not carry — the draft is built around it.'}
+            </p>
             <Button
               className="mt-4"
               disabled={busy || !rowId}
-              onClick={() => rowId && draft.mutate({ rowId })}
+              onClick={() => rowId && draft.mutate({ rowId, ...pendingWork() })}
             >
               {draft.isPending ? (
                 <>
@@ -140,12 +195,25 @@ export function DraftDialog({
             </pre>
 
             <div className="flex flex-wrap gap-1.5">
+              {pending.note.trim() !== '' && (
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() =>
+                    rowId &&
+                    revise.mutate({ rowId, instruction: REWORK_AROUND_NOTE, ...pendingWork() })
+                  }
+                  className="rounded-full border border-gray-900 bg-gray-900 px-3 py-1 text-xs text-white hover:bg-gray-800 disabled:opacity-50"
+                >
+                  Use my note
+                </button>
+              )}
               {SUGGESTIONS.map(s => (
                 <button
                   key={s}
                   type="button"
                   disabled={busy}
-                  onClick={() => rowId && revise.mutate({ rowId, instruction: s })}
+                  onClick={() => rowId && revise.mutate({ rowId, instruction: s, ...pendingWork() })}
                   className="rounded-full border border-gray-300 px-3 py-1 text-xs text-gray-700 hover:bg-gray-50 disabled:opacity-50"
                 >
                   {s}
@@ -157,7 +225,8 @@ export function DraftDialog({
               className="flex gap-2"
               onSubmit={e => {
                 e.preventDefault()
-                if (rowId && instruction.trim()) revise.mutate({ rowId, instruction })
+                if (rowId && instruction.trim())
+                  revise.mutate({ rowId, instruction, ...pendingWork() })
               }}
             >
               <Input
@@ -175,6 +244,23 @@ export function DraftDialog({
                 <span className="sr-only">Send</span>
               </Button>
             </form>
+
+            {/*
+              Keyed on the draft id so the completed-letter state resets when a
+              revision lands. Carrying the previous version's merge into a new
+              draft would show a letter that is neither version.
+            */}
+            {rowId && (
+              <SendPanel
+                key={current.id}
+                rowId={rowId}
+                draftId={current.id}
+                draftVersion={current.version}
+                body={current.body}
+                claimLabel={claimLabel}
+                onRecorded={onDrafted}
+              />
+            )}
           </div>
         )}
 

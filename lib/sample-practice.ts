@@ -55,6 +55,78 @@ const SAMPLE_DENIALS = [
 ]
 
 /**
+ * Appeals the practice already worked, and what the payers said.
+ *
+ * The outcome ledger is the one thing in this product that cannot be imported
+ * from anywhere — it is built one determination at a time — which means a new
+ * workspace would meet the feature as an empty card explaining what it would
+ * have shown. The sample practice exists precisely so no section is empty on
+ * day one, and this is the section that needs it most, because a table of win
+ * rates only teaches anything at volume.
+ *
+ * The pattern here is not decorative. It reproduces what billing teams actually
+ * find, so a customer reading the sample learns to read their own:
+ *
+ *   - CO-16 and CO-18 are paperwork. Corrected claims land almost every time.
+ *   - CO-197 (no prior auth) is winnable on retro-authorisation, but slowly.
+ *   - CO-97 (bundled) mostly loses. This is the row that saves a practice money
+ *     — not by winning appeals, but by telling them which ones to stop writing.
+ *   - CO-29 (timely filing) is close to unwinnable, and the sample says so
+ *     rather than implying every denial is recoverable.
+ *
+ * Two of them are still open, because a ledger where everything is closed out
+ * is not one anybody would recognise.
+ */
+const SAMPLE_HISTORY = [
+  // payer, carc, what it was worth, when it went out, when they answered.
+  { claimNumber: 'SP-9001', payer: 'UnitedHealthcare',       carc: 'CO-197', billed: 2840.00, cpt: '29881', icd10: 'M23.51',  sent: 210, decided: 142, outcome: 'PAID'        as const, recovered: 2840.00 },
+  { claimNumber: 'SP-9002', payer: 'UnitedHealthcare',       carc: 'CO-197', billed: 1465.00, cpt: '64483', icd10: 'M54.17',  sent: 188, decided: 121, outcome: 'PAID'        as const, recovered: 1465.00 },
+  { claimNumber: 'SP-9003', payer: 'UnitedHealthcare',       carc: 'CO-197', billed:  930.00, cpt: '99215', icd10: 'M54.16',  sent: 165, decided: 108, outcome: 'PARTIAL'     as const, recovered:  620.00 },
+  { claimNumber: 'SP-9004', payer: 'UnitedHealthcare',       carc: 'CO-197', billed: 1720.00, cpt: '70553', icd10: 'G43.909', sent: 140, decided:  88, outcome: 'DENIED'      as const, recovered: null },
+  { claimNumber: 'SP-9005', payer: 'UnitedHealthcare',       carc: 'CO-197', billed:  605.00, cpt: '20610', icd10: 'M17.11',  sent: 122, decided:  60, outcome: 'PAID'        as const, recovered:  605.00 },
+
+  { claimNumber: 'SP-9006', payer: 'Aetna',                  carc: 'CO-16',  billed:  418.00, cpt: '99214', icd10: 'E11.9',   sent: 176, decided: 152, outcome: 'PAID'        as const, recovered:  418.00 },
+  { claimNumber: 'SP-9007', payer: 'Aetna',                  carc: 'CO-16',  billed:  360.00, cpt: '99213', icd10: 'I10',     sent: 154, decided: 131, outcome: 'PAID'        as const, recovered:  360.00 },
+  { claimNumber: 'SP-9008', payer: 'Aetna',                  carc: 'CO-16',  billed:  512.00, cpt: '85025', icd10: 'D64.9',   sent: 131, decided: 110, outcome: 'PAID'        as const, recovered:  512.00 },
+  { claimNumber: 'SP-9009', payer: 'Aetna',                  carc: 'CO-16',  billed:  275.00, cpt: '99212', icd10: 'Z00.00',  sent: 104, decided:  84, outcome: 'DENIED'      as const, recovered: null },
+
+  { claimNumber: 'SP-9010', payer: 'UnitedHealthcare',       carc: 'CO-18',  billed:  298.00, cpt: '85025', icd10: 'D64.9',   sent: 168, decided: 149, outcome: 'PAID'        as const, recovered:  298.00 },
+  { claimNumber: 'SP-9011', payer: 'UnitedHealthcare',       carc: 'CO-18',  billed:  344.00, cpt: '99213', icd10: 'I10',     sent: 133, decided: 115, outcome: 'PAID'        as const, recovered:  344.00 },
+
+  { claimNumber: 'SP-9012', payer: 'Cigna',                  carc: 'CO-97',  billed:  680.00, cpt: '96372', icd10: 'J45.909', sent: 198, decided: 146, outcome: 'DENIED'      as const, recovered: null },
+  { claimNumber: 'SP-9013', payer: 'Cigna',                  carc: 'CO-97',  billed:  545.00, cpt: '97110', icd10: 'M62.81',  sent: 172, decided: 119, outcome: 'DENIED'      as const, recovered: null },
+  { claimNumber: 'SP-9014', payer: 'Cigna',                  carc: 'CO-97',  billed:  915.00, cpt: '99215', icd10: 'M54.16',  sent: 149, decided:  95, outcome: 'DENIED'      as const, recovered: null },
+  { claimNumber: 'SP-9015', payer: 'Cigna',                  carc: 'CO-97',  billed:  432.00, cpt: '99204', icd10: 'R51.9',   sent: 126, decided:  71, outcome: 'PARTIAL'     as const, recovered:  148.00 },
+  { claimNumber: 'SP-9016', payer: 'Cigna',                  carc: 'CO-97',  billed:  760.00, cpt: '11042', icd10: 'L97.909', sent:  98, decided:  44, outcome: 'DENIED'      as const, recovered: null },
+
+  { claimNumber: 'SP-9017', payer: 'Blue Cross Blue Shield', carc: 'CO-50',  billed: 1980.00, cpt: '70553', icd10: 'G43.909', sent: 205, decided: 138, outcome: 'PAID'        as const, recovered: 1980.00 },
+  { claimNumber: 'SP-9018', payer: 'Blue Cross Blue Shield', carc: 'CO-50',  billed: 1145.00, cpt: '99215', icd10: 'M54.16',  sent: 181, decided: 112, outcome: 'DENIED'      as const, recovered: null },
+  { claimNumber: 'SP-9019', payer: 'Blue Cross Blue Shield', carc: 'CO-50',  billed:  870.00, cpt: '20610', icd10: 'M17.11',  sent: 158, decided:  91, outcome: 'PAID'        as const, recovered:  870.00 },
+  { claimNumber: 'SP-9020', payer: 'Blue Cross Blue Shield', carc: 'CO-50',  billed: 1420.00, cpt: '64483', icd10: 'M54.17',  sent: 119, decided:  52, outcome: 'DENIED'      as const, recovered: null },
+
+  { claimNumber: 'SP-9021', payer: 'Texas Medicaid',         carc: 'CO-29',  billed:  740.00, cpt: '99213', icd10: 'I10',     sent: 193, decided: 168, outcome: 'DENIED'      as const, recovered: null },
+  { claimNumber: 'SP-9022', payer: 'Texas Medicaid',         carc: 'CO-29',  billed:  515.00, cpt: '97110', icd10: 'M62.81',  sent: 147, decided: 124, outcome: 'DENIED'      as const, recovered: null },
+  // Past the payer's own turnaround with nothing back. Not a loss — a different
+  // fact, with a different remedy, and the tally keeps them apart.
+  { claimNumber: 'SP-9023', payer: 'Texas Medicaid',         carc: 'CO-29',  billed:  390.00, cpt: '99212', icd10: 'Z00.00',  sent: 136, decided:  40, outcome: 'NO_RESPONSE' as const, recovered: null },
+
+  // Still open, so the coverage caveat and the follow-up prompt both have
+  // something real to point at.
+  { claimNumber: 'SP-9024', payer: 'Humana',                 carc: 'CO-22',  billed:  815.00, cpt: '99204', icd10: 'R51.9',   sent:  72, decided: null, outcome: 'PENDING'     as const, recovered: null },
+  { claimNumber: 'SP-9025', payer: 'Blue Cross Blue Shield', carc: 'CO-11',  billed:  640.00, cpt: '20610', icd10: 'M17.11',  sent:  31, decided: null, outcome: 'PENDING'     as const, recovered: null },
+]
+
+/** Where a settled appeal leaves its row. A lost one is not still to work. */
+function historyRowStatus(outcome: (typeof SAMPLE_HISTORY)[number]['outcome']) {
+  if (outcome === 'PAID' || outcome === 'PARTIAL') return 'PAID' as const
+  if (outcome === 'PENDING') return 'SENT' as const
+  // Written off rather than reopened: these are the sample's finished work, and
+  // twelve lost appeals sitting in the active queue would drown the fourteen
+  // denials the worklist is actually meant to demonstrate.
+  return 'DEAD' as const
+}
+
+/**
  * An A/R snapshot wide enough to be the denominator for a denial rate. Denial
  * rows above are echoed here as DENIED so the two views agree — a worklist that
  * disagrees with the claims table is the first thing anyone notices.
@@ -63,6 +135,25 @@ const SAMPLE_CLAIMS = [
   ...SAMPLE_DENIALS.map(d => ({
     claimNumber: d.claimNumber, payer: d.payer, status: 'DENIED' as const,
     billed: d.billed, allowed: null, paid: 0, days: d.days, cpt: d.cpt, icd10: d.icd10, carc: d.carc,
+  })),
+  // The worked appeals, at their settled state. Echoed for the same reason the
+  // denials are: a worklist that disagrees with the claims table is the first
+  // thing anyone notices, and a won appeal that still reads DENIED on the A/R
+  // snapshot is exactly that disagreement.
+  ...SAMPLE_HISTORY.map(h => ({
+    claimNumber: h.claimNumber,
+    payer: h.payer,
+    status:
+      h.outcome === 'PAID' ? ('PAID' as const)
+      : h.outcome === 'PARTIAL' ? ('PARTIAL' as const)
+      : ('DENIED' as const),
+    billed: h.billed,
+    allowed: h.recovered,
+    paid: h.recovered ?? 0,
+    days: h.decided ?? h.sent,
+    cpt: h.cpt,
+    icd10: h.icd10,
+    carc: h.carc,
   })),
   { claimNumber: 'SP-10001', payer: 'Blue Cross Blue Shield', status: 'PAID' as const,    billed: 1240.00, allowed:  892.00, paid:  892.00, days: 31, cpt: '99214', icd10: 'E11.9',   carc: null },
   { claimNumber: 'SP-10002', payer: 'UnitedHealthcare',       status: 'PAID' as const,    billed:  480.00, allowed:  344.00, paid:  344.00, days: 28, cpt: '99213', icd10: 'I10',     carc: null },
@@ -95,13 +186,13 @@ export async function seedSamplePractice(prisma: PrismaClient, orgId: string): P
   })
   if (existing) return 0
 
-  await prisma.importBatch.create({
+  const denials = await prisma.importBatch.create({
     data: {
       orgId,
       kind: 'DENIALS',
       isSample: true,
       filename: SAMPLE_FILENAME,
-      rowCount: SAMPLE_DENIALS.length,
+      rowCount: SAMPLE_DENIALS.length + SAMPLE_HISTORY.length,
       droppedColumns: [],
       rows: {
         create: SAMPLE_DENIALS.map(d => ({
@@ -118,6 +209,43 @@ export async function seedSamplePractice(prisma: PrismaClient, orgId: string): P
       },
     },
   })
+
+  // The worked history, written through the same tables a real appeal uses —
+  // a DenialRow with a DenialSubmission carrying its outcome. Nested creates
+  // rather than a second batch so `isSample` still deletes all of it at once.
+  for (const h of SAMPLE_HISTORY) {
+    const resolved = h.outcome !== 'PENDING'
+    await prisma.denialRow.create({
+      data: {
+        orgId,
+        batchId: denials.id,
+        claimNumber: h.claimNumber,
+        payer: h.payer,
+        carc: h.carc,
+        billed: h.billed,
+        denialDate: daysAgo(h.sent + 21),
+        cpt: h.cpt,
+        icd10: h.icd10,
+        reason: null,
+        status: historyRowStatus(h.outcome),
+        lastTouchedAt: daysAgo(h.decided ?? h.sent),
+        submissions: {
+          create: {
+            orgId,
+            channel: 'PORTAL',
+            destination: `${h.payer} provider portal`,
+            sentAt: daysAgo(h.sent),
+            confirmationRef: `CASE-${h.claimNumber.slice(-4)}`,
+            outcome: h.outcome,
+            outcomeAt: h.decided === null ? null : daysAgo(h.decided),
+            amountRecovered: h.recovered,
+            outcomeSource: resolved ? 'BILLER' : null,
+            outcomeRecordedAt: h.decided === null ? null : daysAgo(h.decided),
+          },
+        },
+      },
+    })
+  }
 
   await prisma.importBatch.create({
     data: {

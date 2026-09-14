@@ -84,6 +84,76 @@ enum OrgClaimStatus {
   UNKNOWN
 }
 
+// How an appeal actually reached the payer. Portal first because that is the
+// channel most payers prefer and the only one that hands back a case number on
+// the spot; MAIL is last because it is the one that needs a certified receipt to
+// prove anything. OTHER exists so a real submission is never lost to a missing
+// enum value.
+enum SubmissionChannel {
+  PORTAL
+  FAX
+  MAIL
+  CLEARINGHOUSE
+  PHONE
+  OTHER
+}
+
+// What the payer did with the appeal.
+//
+// Until this existed the product recorded that a letter went out and never
+// what came back, so "does this argument actually get paid by this payer" was
+// unanswerable — for the biller reading one row, and for us reading all of them.
+//
+// PENDING is the state every submission is born in and most will sit in for
+// weeks; it is a real answer ("we are still waiting"), not a missing value, so
+// it is the default rather than a null.
+//
+// PARTIAL is separate from PAID because in appeals it is the common win: the
+// payer allows two of the three units, or pays the claim and upholds the
+// bundling adjustment. Folding it into PAID would overstate the win rate of
+// every argument, and folding it into DENIED would understate it.
+//
+// NO_RESPONSE is not DENIED. A payer that never answered inside its own
+// turnaround is a different fact, with a different remedy (escalate, or file a
+// complaint with the state) than one that answered no.
+enum SubmissionOutcome {
+  PENDING
+  PAID
+  PARTIAL
+  DENIED
+  NO_RESPONSE
+  WITHDRAWN
+}
+
+// Who says so.
+//
+// Stamped for the same reason resolveDestination stamps DestinationSource and
+// ImportBatch stamps statusDerived: an outcome a human asserted after reading
+// the payer's letter and one this app inferred from a later A/R export are not
+// the same quality of evidence, and the aggregate that will eventually be sold
+// as "what wins" must be able to tell them apart.
+//
+// REMITTANCE means lib/denials/reconcile.ts matched the row to a claim that a
+// newer snapshot shows paid after the appeal went out. That is strong evidence
+// and it is not proof — the payer may have paid for an unrelated reason.
+enum OutcomeSource {
+  BILLER
+  REMITTANCE
+}
+
+// What happened to a claim, for the history a biller reads before phoning a
+// payer. IMPORTED is not written as a row — it is derived from the batch the
+// claim arrived on, because writing one per claim would mean 1,200 rows per
+// upload saying nothing that the batch does not already say.
+enum ClaimEventKind {
+  STATUS_CHANGED
+  NOTE_ADDED
+  FOLLOW_UP_SET
+  CODE_CORRECTED
+  REVIEWED
+  SENT_TO_WORKLIST
+}
+
 // ─── NextAuth Tables ─────────────────────────────────────────────────────────
 
 model User {
@@ -97,6 +167,7 @@ model User {
   accounts      Account[]
   sessions      Session[]
   agentLogs     AgentLog[]
+  conversations AgentConversation[]
   // Nullable: the seeded demo accounts pre-date tenancy and have no org. Every
   // account created from here on gets one at signup. Queries that read customer
   // data must go through orgProcedure, which refuses a user without an org
@@ -201,8 +272,37 @@ model Organization {
   drafts             DenialDraft[]
   workedEvents       DenialWorkedEvent[]
   connectionRequests ConnectionRequest[]
-  createdAt          DateTime            @default(now())
-  updatedAt          DateTime            @updatedAt
+  submissions        DenialSubmission[]
+  payerDestinations  PayerDestination[]
+  claimWork          ClaimWork[]
+  claimEvents        ClaimEvent[]
+  conversations      AgentConversation[]
+
+  // ─ The practice, as it appears on a letter ─────────────────────────────────
+  //
+  // Every drafted document ends in a signature block the model can only render
+  // as [PRACTICE NAME], because the workspace had nowhere to hold the practice's
+  // own details. These are the billing entity's identifiers, NOT a patient's —
+  // an NPI and a TIN belong to the provider — so they are safe to store here and
+  // do not touch the de-identification promise above.
+  //
+  // All nullable: a workspace is usable before anyone fills this in, and a
+  // half-filled profile still beats retyping an NPI on every appeal.
+  practiceName String?
+  npi          String?
+  tin          String?
+  addressLine1 String?
+  addressLine2 String?
+  city         String?
+  state        String?
+  postalCode   String?
+  contactName  String?
+  contactPhone String?
+  contactFax   String?
+  contactEmail String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@map("organizations")
 }
@@ -276,6 +376,7 @@ model DenialRow {
   followUpAt DateTime?
 
   drafts      DenialDraft[]
+  submissions DenialSubmission[]
   workedEvent DenialWorkedEvent?
   createdAt   DateTime           @default(now())
   updatedAt   DateTime           @updatedAt
@@ -324,6 +425,136 @@ model DenialWorkedEvent {
   @@map("denial_worked_events")
 }
 
+// One attempt at getting a document to the payer.
+//
+// `status = SENT` on its own is an unverified self-report: it records that
+// somebody clicked a button, not what was sent, where it went, or what came
+// back. A biller whose appeal is refused as untimely has to produce a portal
+// case number, a fax confirmation or a certified-mail receipt, and until this
+// existed there was nowhere in the product to keep one.
+//
+// One row per attempt, never overwritten. A first-level appeal that comes back
+// denied is followed by a second-level appeal to a different address, and both
+// halves of that history matter — so this is a list, not a set of columns on
+// DenialRow.
+//
+// Holds NO patient identifier and no letter body. The identifiers are merged
+// into the document in the browser and never reach the server (see
+// lib/appeals/merge.ts); the body already lives in DenialDraft, referenced here
+// by id and version so the record says which draft actually went out.
+//
+// Nothing derived is stored, same as everywhere else: the filing deadline and
+// the required-attachment list are recomputed on read. What is stored is only
+// what a human asserted and no query could re-derive.
+model DenialSubmission {
+  id    String       @id @default(cuid())
+  orgId String
+  org   Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  rowId String
+  row   DenialRow    @relation(fields: [rowId], references: [id], onDelete: Cascade)
+
+  // Which draft went out. Nullable because a biller may well have sent a letter
+  // they wrote themselves, and refusing to record that would put the proof
+  // outside the product again.
+  draftId      String?
+  draftVersion Int?
+
+  channel     SubmissionChannel
+  // Where it went, as a human-readable label: the portal name, the fax number,
+  // the PO box. Free text rather than a foreign key because the destination is a
+  // fact about this attempt and must not change retroactively when the payer
+  // directory is corrected.
+  destination String
+
+  sentAt          DateTime
+  // The portal case number, fax confirmation or certified-mail tracking number.
+  // The proof of timely filing.
+  confirmationRef String?
+  notes           String?
+  submittedById   String?
+
+  // ── What came back ────────────────────────────────────────────────────────
+  //
+  // On the attempt, not on DenialRow, and that is the whole design. A denial
+  // that loses a first-level appeal and wins a second-level one has to record
+  // both, because the question worth answering is not "did this claim get paid"
+  // — the row status already says that — but "which argument, to which payer,
+  // at which level, is what got it paid". Columns on the row would keep only
+  // the last answer and silently destroy the first.
+  outcome   SubmissionOutcome @default(PENDING)
+  // When the payer answered, as far as the biller can tell — the date on the
+  // determination letter or the remit, not the date somebody typed it in.
+  // Days-to-resolution is outcomeAt minus sentAt, computed on read like every
+  // other interval in this schema, and is deliberately not a column.
+  outcomeAt DateTime?
+
+  // What the appeal actually recovered. Null while PENDING, and null is also a
+  // legitimate answer on a win the biller could not put a number to yet — the
+  // win rate must not depend on this being filled in.
+  amountRecovered Decimal? @db.Decimal(12, 2)
+
+  // The code the payer denied the APPEAL under, which is routinely not the code
+  // it denied the claim under. A CO-197 denial appealed and returned as CO-16 is
+  // the payer saying the argument was fine and the paperwork was not, and that
+  // distinction is the difference between rewriting the letter and refiling it.
+  outcomeCarc String?
+  // What the determination said, in the biller's words. The same field as
+  // DenialRow.note and for the same reason: the real reason is often nowhere in
+  // any structured code.
+  outcomeNote String?
+
+  outcomeSource     OutcomeSource?
+  outcomeById       String?
+  // When it was recorded here, as against outcomeAt, when it happened. An
+  // outcome typed in six weeks late is still true; the gap is a measure of the
+  // workspace's follow-up discipline, not of the payer's.
+  outcomeRecordedAt DateTime?
+
+  createdAt DateTime @default(now())
+
+  @@index([orgId, sentAt(sort: Desc)])
+  @@index([rowId, sentAt(sort: Desc)])
+  // Two reads: "which appeals are still owed an answer" (outcome = PENDING,
+  // oldest first) and the whole outcome aggregate, which scans resolved rows
+  // for one org and would otherwise walk every submission ever made.
+  @@index([orgId, outcome, sentAt])
+  @@map("denial_submissions")
+}
+
+// Where THIS workspace sends appeals for a given payer.
+//
+// lib/billing/payers.ts is a Texas panel and says so in its own header. A
+// billing company in Ohio has correct addresses for its own payers and we do
+// not; this is where they record them, and an entry here outranks the built-in
+// directory every time. It is also the honest answer to a payer we cannot
+// resolve at all — an empty field the biller can fill, rather than a confidently
+// wrong PO box.
+//
+// payerKey is the normalized payer name (see lib/billing/submission.ts), so a
+// row that arrives as "UnitedHealthcare" and one that arrives as "United
+// Healthcare" find the same entry.
+model PayerDestination {
+  id    String       @id @default(cuid())
+  orgId String
+  org   Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  payerKey   String
+  payerLabel String
+
+  channel        SubmissionChannel
+  portalUrl      String?
+  faxNumber      String?
+  mailingAddress String?
+  notes          String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([orgId, payerKey])
+  @@index([orgId])
+  @@map("payer_destinations")
+}
+
 // A claim line from an A/R export. The denominator the denial worklist lacks.
 //
 // Same discipline as DenialRow: facts as they arrived, nothing derived stored.
@@ -369,6 +600,81 @@ model OrgClaim {
   @@map("org_claims")
 }
 
+// Human-owned state for a claim, kept off OrgClaim on purpose.
+//
+// OrgClaim is a snapshot row. Only the newest CLAIMS batch is read, and next
+// month's A/R export supersedes this one — so a status change or a corrected
+// code written onto an OrgClaim would be silently discarded on the customer's
+// normal monthly cadence, and deleting a batch would cascade it away. Keying on
+// claimNumber instead means the work survives every re-import.
+//
+// This is the same split DenialRow already makes between "facts as they arrived"
+// and human state; it is just forced here, because the facts are replaceable.
+//
+// Nothing here overwrites what was imported. A corrected code sits ALONGSIDE the
+// one on the claim, because "billed 99213, should have been 99214" is the thing
+// a coder actually needs to see — and the thing a corrected claim is built from.
+model ClaimWork {
+  id          String       @id @default(cuid())
+  orgId       String
+  org         Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  // The join key. Deliberately not a relation to OrgClaim: that row is replaced
+  // every import and this one must outlive it.
+  claimNumber String
+
+  // What the biller says, when it differs from the export. Displayed next to the
+  // imported status, never in place of it.
+  statusOverride OrgClaimStatus?
+  note           String?
+  followUpAt     DateTime?
+
+  correctedCpt   String?
+  correctedIcd10 String?
+  correctedCarc  String?
+
+  // The last code review, cached against the facts it was drawn from so opening
+  // the claim twice does not spend a second model call. Cleared when the hash
+  // no longer matches what the claim currently says.
+  reviewBody      String?
+  reviewFactsHash String?
+  reviewedAt      DateTime?
+
+  // Stamped explicitly on real work, never @updatedAt — the same rule
+  // DenialRow.lastTouchedAt follows, for the same reason.
+  lastTouchedAt DateTime?
+
+  events    ClaimEvent[]
+  createdAt DateTime     @default(now())
+
+  @@unique([orgId, claimNumber])
+  @@index([orgId, followUpAt])
+  @@map("claim_work")
+}
+
+// One thing that happened to a claim. Append-only.
+//
+// The product had no per-record history at all: AgentLog is not org-scoped, and
+// a denial's past could only be reconstructed from lastTouchedAt plus its
+// submissions. "How many times have we chased this" was unanswerable.
+model ClaimEvent {
+  id     String       @id @default(cuid())
+  orgId  String
+  org    Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  workId String
+  work   ClaimWork    @relation(fields: [workId], references: [id], onDelete: Cascade)
+
+  kind    ClaimEventKind
+  // Free text for the timeline: "Denied to Paid", "CPT 99213 to 99214".
+  detail  String?
+  // Plain string, no relation — matching ImportBatch.uploadedById.
+  actorId String?
+
+  createdAt DateTime @default(now())
+
+  @@index([orgId, workId, createdAt(sort: Desc)])
+  @@map("claim_events")
+}
+
 // A request for a direct data connection. Database and EHR connectors are a
 // custom-plan feature; this records who asked for what so the ask is a recorded
 // lead rather than a dead upgrade wall.
@@ -383,4 +689,57 @@ model ConnectionRequest {
 
   @@index([orgId, createdAt(sort: Desc)])
   @@map("connection_requests")
+}
+
+// ─── Agent conversations ─────────────────────────────────────────────────────
+//
+// The chat with the billing assistant, kept so it survives a refresh and so the
+// rail can show a history list. Org-scoped like every other customer table and
+// additionally filtered by userId: a conversation is one biller's, not the
+// workspace's, even though every answer in it was drawn from workspace data.
+//
+// Nothing here holds a person on the claim. The assistant reads only the three
+// tools in lib/ai/workspace-tools.ts, all of which query de-identified tables,
+// so the question and the answer can name a claim number, a payer or a CARC
+// code and no more. That is the same reason AgentLog can already store `intent`
+// and `message`. See __tests__/no-phi-columns.test.ts, which classifies this.
+
+model AgentConversation {
+  id     String       @id @default(cuid())
+  orgId  String
+  org    Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  userId String
+  user   User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // Taken from the opening question, trimmed. Cheap and honest — generating a
+  // title costs a model round-trip per conversation to restate what the user
+  // just typed.
+  title  String
+
+  messages AgentMessage[]
+
+  createdAt     DateTime @default(now())
+  lastMessageAt DateTime @default(now())
+
+  @@index([orgId, userId, lastMessageAt(sort: Desc)])
+  @@map("agent_conversations")
+}
+
+model AgentMessage {
+  id             String            @id @default(cuid())
+  conversationId String
+  conversation   AgentConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  role           String
+  content        String
+  // The reasoning trace, as TraceStep[] from lib/ai/trace.ts: which tool ran,
+  // the arguments it ran with, what came back and which import the rows are
+  // from. Stored rather than recomputed because it is the evidence for an
+  // answer a biller may act on weeks later, and re-running the tools would
+  // produce a different trace against changed data.
+  trace          Json?
+  agentName      String?
+  isError        Boolean           @default(false)
+  createdAt      DateTime          @default(now())
+
+  @@index([conversationId, createdAt])
+  @@map("agent_messages")
 }

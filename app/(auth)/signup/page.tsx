@@ -6,9 +6,9 @@ import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
 import { GoogleButton } from '@/components/auth/GoogleButton'
-import { AuthBrandPanel, AuthMobileHeader } from '@/components/auth/AuthBrandPanel'
+import { AuthShell } from '@/components/auth/AuthShell'
+import { AuthDivider, AuthError, AuthField } from '@/components/auth/AuthField'
 import { trpc } from '@/lib/trpc/client'
 
 export default function SignupPage() {
@@ -45,115 +45,81 @@ export default function SignupPage() {
   }
 
   return (
-    <div className="theme-static flex min-h-screen">
-      <AuthBrandPanel />
+    <AuthShell
+      title="Create an account"
+      subtitle="Create your workspace"
+      footer={
+        <>
+          Already have an account?{' '}
+          <Link href="/login" className="font-semibold text-[#5BE3F5] hover:text-[#9DF0FA]">
+            Sign in
+          </Link>
+        </>
+      }
+    >
+      <div className="space-y-5">
+        <GoogleButton label="Sign up with Google" />
 
-      {/* Right panel — form */}
-      <div className="flex w-full md:w-1/2 flex-col items-center justify-center bg-white px-8 py-12">
-        <div className="w-full max-w-sm space-y-6">
-          <AuthMobileHeader />
+        <AuthDivider label="or" />
 
-          <div className="space-y-1">
-            <h2 className="text-2xl font-bold text-gray-900">Create an account</h2>
-            <p className="text-sm text-gray-500">Get started with Yeam.ai EHR</p>
-          </div>
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <AuthField
+            id="name"
+            label="Full name"
+            type="text"
+            value={name}
+            onChange={e => setName(e.target.value)}
+            placeholder="Jane Smith"
+            required
+            autoComplete="name"
+          />
 
-          {/* OAuth */}
-          <GoogleButton label="Sign up with Google" />
+          <AuthField
+            id="email"
+            label="Email"
+            type="email"
+            value={email}
+            onChange={e => setEmail(e.target.value)}
+            placeholder="you@example.com"
+            required
+            autoComplete="email"
+          />
 
-          {/* Divider */}
-          <div className="relative">
-            <div className="absolute inset-0 flex items-center">
-              <div className="w-full border-t border-gray-200" />
-            </div>
-            <div className="relative flex justify-center text-xs">
-              <span className="bg-white px-3 text-gray-400">or sign up with email</span>
-            </div>
-          </div>
+          <AuthField
+            id="password"
+            label="Password"
+            type="password"
+            value={password}
+            onChange={e => setPassword(e.target.value)}
+            placeholder="••••••••"
+            required
+            autoComplete="new-password"
+            minLength={6}
+          />
 
-          <form onSubmit={handleSubmit} className="space-y-4">
-            <div className="space-y-1.5">
-              <label htmlFor="name" className="text-sm font-medium text-gray-700">
-                Full name
-              </label>
-              <Input
-                id="name"
-                type="text"
-                value={name}
-                onChange={e => setName(e.target.value)}
-                placeholder="Jane Smith"
-                required
-                autoComplete="name"
-              />
-            </div>
+          <AuthField
+            id="confirm"
+            label="Confirm password"
+            type="password"
+            value={confirm}
+            onChange={e => setConfirm(e.target.value)}
+            placeholder="••••••••"
+            required
+            autoComplete="new-password"
+          />
 
-            <div className="space-y-1.5">
-              <label htmlFor="email" className="text-sm font-medium text-gray-700">
-                Email
-              </label>
-              <Input
-                id="email"
-                type="email"
-                value={email}
-                onChange={e => setEmail(e.target.value)}
-                placeholder="you@example.com"
-                required
-                autoComplete="email"
-              />
-            </div>
+          {error && <AuthError>{error}</AuthError>}
 
-            <div className="space-y-1.5">
-              <label htmlFor="password" className="text-sm font-medium text-gray-700">
-                Password
-              </label>
-              <Input
-                id="password"
-                type="password"
-                value={password}
-                onChange={e => setPassword(e.target.value)}
-                placeholder="••••••••"
-                required
-                autoComplete="new-password"
-                minLength={6}
-              />
-            </div>
-
-            <div className="space-y-1.5">
-              <label htmlFor="confirm" className="text-sm font-medium text-gray-700">
-                Confirm password
-              </label>
-              <Input
-                id="confirm"
-                type="password"
-                value={confirm}
-                onChange={e => setConfirm(e.target.value)}
-                placeholder="••••••••"
-                required
-                autoComplete="new-password"
-              />
-            </div>
-
-            {error && (
-              <p className="text-sm text-red-600 bg-red-50 border border-red-100 rounded-md px-3 py-2">
-                {error}
-              </p>
-            )}
-
-            <Button type="submit" className="w-full" disabled={signup.isPending}>
-              {signup.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
-              Create account
-            </Button>
-          </form>
-
-          <p className="text-center text-sm text-gray-500">
-            Already have an account?{' '}
-            <Link href="/login" className="font-medium text-blue-600 hover:underline">
-              Sign in
-            </Link>
-          </p>
-        </div>
+          <Button
+            type="submit"
+            disabled={signup.isPending}
+            className="h-10 w-full rounded-lg bg-[#05DBF0] font-bold text-[#032431] shadow-lg shadow-[#05DBF0]/25 hover:bg-[#3FE6F7]"
+          >
+            {signup.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
+            Create account
+          </Button>
+        </form>
       </div>
-    </div>
+    </AuthShell>
   )
 }
-

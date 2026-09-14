@@ -8,16 +8,15 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { RevenueChart } from '@/components/analytics/RevenueChart'
-import { DenialRateChart } from '@/components/analytics/DenialRateChart'
+import { DenialCountChart, DenialRateChart } from '@/components/analytics/DenialRateChart'
+import { RankedBar } from '@/components/charts/RankedBar'
+import { ViewToggle, useAnalyticsView } from '@/components/charts/ViewToggle'
+import { ordinalSteps, useChartTheme } from '@/lib/charts/theme'
+import { monthLabel, pct, usd, usdCompact } from '@/lib/charts/format'
 import { AgingChart } from './AgingChart'
+import { AppealOutcomes } from './AppealOutcomes'
 import { EmptyCard } from './EmptyCard'
 import { NoWorkspace, isNoWorkspace } from './NoWorkspace'
-
-const usd = new Intl.NumberFormat('en-US', {
-  style: 'currency',
-  currency: 'USD',
-  maximumFractionDigits: 0,
-})
 
 const REMEDY_VARIANT: Record<string, 'default' | 'success' | 'warning' | 'secondary' | 'destructive' | 'outline'> = {
   corrected_claim: 'warning',
@@ -25,16 +24,6 @@ const REMEDY_VARIANT: Record<string, 'default' | 'success' | 'warning' | 'second
   appeal: 'outline',
   not_recoverable: 'secondary',
   unknown: 'secondary',
-}
-
-/** A percentage, or a dash. 0/0 is not zero and must not render as 0%. */
-function pct(value: number | null | undefined): string {
-  return value === null || value === undefined ? '—' : `${value.toFixed(1)}%`
-}
-
-function monthLabel(month: string): string {
-  const [year, m] = month.split('-')
-  return `${['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][Number(m) - 1]} ${year.slice(2)}`
 }
 
 function Tile({
@@ -77,6 +66,15 @@ function Tile({
  *
  * Where a source is missing the card says which file would fill it, rather than
  * rendering zeroes that read as a real measurement.
+ *
+ * Every card below has two renderings of exactly the same figures — a chart and
+ * a table — behind the Charts/Numbers toggle. Charts lead because the first
+ * question anyone brings here is "which way is this going". The table is the
+ * other half of that bargain: a value that can only be got at by hovering a
+ * chart is not a value the reader can actually use, so nothing is chart-only.
+ *
+ * The KPI tiles stay put in both views. A number is already the right form for
+ * a single current value; a one-bar chart of it would be worse.
  */
 export function InsightsView() {
   const overview = trpc.insights.overview.useQuery()
@@ -86,6 +84,9 @@ export function InsightsView() {
   const carcs = trpc.insights.carcs.useQuery()
   const codes = trpc.insights.codes.useQuery()
   const recovery = trpc.insights.recovery.useQuery()
+
+  const [view, setView] = useAnalyticsView()
+  const theme = useChartTheme()
 
   if (isNoWorkspace(overview.error)) return <NoWorkspace />
 
@@ -103,15 +104,21 @@ export function InsightsView() {
     )
   }
 
-  const revenueData = (revenue.data ?? []).map(r => ({
+  const revenueMonths = revenue.data ?? []
+  const revenueData = revenueMonths.map(r => ({
     date: monthLabel(r.month),
     billed: r.billed,
     collected: r.paid,
   }))
 
-  const denialSeries = (denials.data?.months ?? [])
+  const denialMonths = denials.data?.months ?? []
+  const denialSeries = denialMonths
     .filter(m => m.denialRate !== null)
     .map(m => ({ date: monthLabel(m.month), rate: m.denialRate as number }))
+  const denialCounts = denialMonths.map(m => ({ date: monthLabel(m.month), denied: m.denied }))
+
+  const recoveryStages = recovery.data?.stages ?? []
+  const stageFills = ordinalSteps(theme, recoveryStages.length)
 
   return (
     <div className="space-y-5">
@@ -136,24 +143,29 @@ export function InsightsView() {
         </p>
       )}
 
+      {/* One control, above everything it scopes — never a toggle per card. */}
+      <div className="flex justify-end">
+        <ViewToggle value={view} onChange={setView} />
+      </div>
+
       {/* Snapshot side. */}
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <Tile
           label="Billed"
-          value={claims ? usd.format(claims.billed) : '—'}
+          value={claims ? usd(claims.billed) : '—'}
           sub={claims ? `${claims.total} claims` : 'Needs an A/R export'}
           loading={loading}
         />
         <Tile
           label="Collected"
-          value={claims ? usd.format(claims.paid) : '—'}
+          value={claims ? usd(claims.paid) : '—'}
           sub={claims ? `${pct(claims.grossCollectionRate)} of billed` : 'Needs an A/R export'}
           tone="good"
           loading={loading}
         />
         <Tile
           label="Outstanding A/R"
-          value={claims ? usd.format(claims.outstanding) : '—'}
+          value={claims ? usd(claims.outstanding) : '—'}
           sub={claims ? 'Still owed by payers' : 'Needs an A/R export'}
           loading={loading}
         />
@@ -169,14 +181,14 @@ export function InsightsView() {
       {/* Worklist side. Deliberately a separate row — different question. */}
       {denialSide && (
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          <Tile label="At stake" value={usd.format(denialSide.atStake)} sub={`${denialSide.open} open denials`} />
+          <Tile label="At stake" value={usd(denialSide.atStake)} sub={`${denialSide.open} open denials`} />
           <Tile
             label="Expiring in 14 days"
             value={String(denialSide.expiringSoon)}
-            sub={`${usd.format(denialSide.expiringSoonBilled)} at risk`}
+            sub={`${usd(denialSide.expiringSoonBilled)} at risk`}
             tone={denialSide.expiringSoon > 0 ? 'danger' : 'default'}
           />
-          <Tile label="Recovered" value={usd.format(denialSide.recovered)} sub="Marked paid on the worklist" tone="good" />
+          <Tile label="Recovered" value={usd(denialSide.recovered)} sub="Marked paid on the worklist" tone="good" />
           <Tile
             label="Not worth working"
             value={String(denialSide.notRecoverable + denialSide.expired)}
@@ -192,7 +204,33 @@ export function InsightsView() {
           </CardHeader>
           <CardContent>
             {revenueData.length > 0 ? (
-              <RevenueChart data={revenueData} />
+              view === 'chart' ? (
+                <RevenueChart data={revenueData} />
+              ) : (
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Month</TableHead>
+                      <TableHead className="text-right">Billed</TableHead>
+                      <TableHead className="text-right">Collected</TableHead>
+                      <TableHead className="text-right">Rate</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {revenueMonths.map(row => (
+                      <TableRow key={row.month}>
+                        <TableCell>{monthLabel(row.month)}</TableCell>
+                        <TableCell className="text-right tabular-nums">{usd(row.billed)}</TableCell>
+                        <TableCell className="text-right tabular-nums">{usd(row.paid)}</TableCell>
+                        <TableCell className="text-right tabular-nums">
+                          {/* Same guard as everywhere else: 0 billed has no rate. */}
+                          {pct(row.billed > 0 ? (row.paid / row.billed) * 100 : null)}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              )
             ) : (
               <EmptyCard
                 title="No revenue history"
@@ -209,10 +247,31 @@ export function InsightsView() {
           <CardContent>
             {aging.data && aging.data.total > 0 ? (
               <>
-                <AgingChart data={aging.data.buckets} />
+                {view === 'chart' ? (
+                  <AgingChart data={aging.data.buckets} />
+                ) : (
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Age</TableHead>
+                        <TableHead className="text-right">Outstanding</TableHead>
+                        <TableHead className="text-right">Claims</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {aging.data.buckets.map(bucket => (
+                        <TableRow key={bucket.bucket}>
+                          <TableCell>{bucket.bucket} days</TableCell>
+                          <TableCell className="text-right tabular-nums">{usd(bucket.amount)}</TableCell>
+                          <TableCell className="text-right tabular-nums">{bucket.count}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                )}
                 {aging.data.undated.count > 0 && (
                   <p className="mt-2 text-xs text-amber-700">
-                    {usd.format(aging.data.undated.amount)} across {aging.data.undated.count} claims
+                    {usd(aging.data.undated.amount)} across {aging.data.undated.count} claims
                     had no usable date and could not be aged.
                   </p>
                 )}
@@ -235,32 +294,60 @@ export function InsightsView() {
         </CardHeader>
         <CardContent>
           {denials.data?.basis === 'snapshot' && denialSeries.length > 0 ? (
-            <DenialRateChart data={denialSeries} />
-          ) : (denials.data?.months.length ?? 0) > 0 ? (
-            <div>
-              {/* Without a claims snapshot there is no denominator. Counts are
-                  the honest thing to show; a rate here would always be 100%. */}
-              <p className="mb-3 text-sm text-gray-500">
-                Counts, not a rate — a denial rate needs an A/R export to divide by.
-              </p>
+            view === 'chart' ? (
+              <DenialRateChart data={denialSeries} />
+            ) : (
               <Table>
                 <TableHeader>
                   <TableRow>
                     <TableHead>Month</TableHead>
-                    <TableHead className="text-right">Denials</TableHead>
-                    <TableHead className="text-right">Billed</TableHead>
+                    <TableHead className="text-right">Claims</TableHead>
+                    <TableHead className="text-right">Denied</TableHead>
+                    <TableHead className="text-right">Denial rate</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {denials.data!.months.map(m => (
+                  {denialMonths.map(m => (
                     <TableRow key={m.month}>
                       <TableCell>{monthLabel(m.month)}</TableCell>
-                      <TableCell className="text-right">{m.denied}</TableCell>
-                      <TableCell className="text-right">{usd.format(m.deniedBilled)}</TableCell>
+                      <TableCell className="text-right tabular-nums">{m.total}</TableCell>
+                      <TableCell className="text-right tabular-nums">{m.denied}</TableCell>
+                      <TableCell className="text-right tabular-nums">{pct(m.denialRate)}</TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
               </Table>
+            )
+          ) : denialMonths.length > 0 ? (
+            <div>
+              {/* Without a claims snapshot there is no denominator. Counts are
+                  the honest thing to show; a rate here would always be 100%.
+                  The chart plots those counts and is labelled as counts. */}
+              <p className="mb-3 text-sm text-gray-500">
+                Counts, not a rate — a denial rate needs an A/R export to divide by.
+              </p>
+              {view === 'chart' ? (
+                <DenialCountChart data={denialCounts} />
+              ) : (
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Month</TableHead>
+                      <TableHead className="text-right">Denials</TableHead>
+                      <TableHead className="text-right">Billed</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {denialMonths.map(m => (
+                      <TableRow key={m.month}>
+                        <TableCell>{monthLabel(m.month)}</TableCell>
+                        <TableCell className="text-right tabular-nums">{m.denied}</TableCell>
+                        <TableCell className="text-right tabular-nums">{usd(m.deniedBilled)}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              )}
             </div>
           ) : (
             <EmptyCard title="No denial history" need="Import a denials or A/R export to see this." />
@@ -275,33 +362,48 @@ export function InsightsView() {
           </CardHeader>
           <CardContent>
             {(carcs.data?.length ?? 0) > 0 ? (
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead className="w-20">Code</TableHead>
-                    <TableHead>Reason</TableHead>
-                    <TableHead>Needs</TableHead>
-                    <TableHead className="text-right">At stake</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {carcs.data!.map(row => (
-                    <TableRow key={row.carc}>
-                      <TableCell className="font-mono text-xs">{row.carc}</TableCell>
-                      <TableCell className="max-w-[16rem] truncate text-sm" title={row.label}>
-                        {row.label}
-                        <span className="ml-1 text-gray-400">×{row.count}</span>
-                      </TableCell>
-                      <TableCell>
-                        <Badge variant={REMEDY_VARIANT[row.remedy] ?? 'secondary'}>
-                          {row.remedyLabel}
-                        </Badge>
-                      </TableCell>
-                      <TableCell className="text-right">{usd.format(row.atStake)}</TableCell>
+              view === 'chart' ? (
+                <RankedBar
+                  // Ranked by money, not by count — ten cheap denials matter
+                  // less than one expensive one, and the table sorts the same way.
+                  data={carcs.data!.map(row => ({
+                    key: row.carc,
+                    label: `${row.carc} · ${row.label}`,
+                    value: row.atStake,
+                    note: `${row.count} denials · ${row.remedyLabel}`,
+                  }))}
+                  format={usdCompact}
+                  labelWidth={190}
+                />
+              ) : (
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="w-20">Code</TableHead>
+                      <TableHead>Reason</TableHead>
+                      <TableHead>Needs</TableHead>
+                      <TableHead className="text-right">At stake</TableHead>
                     </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
+                  </TableHeader>
+                  <TableBody>
+                    {carcs.data!.map(row => (
+                      <TableRow key={row.carc}>
+                        <TableCell className="font-mono text-xs">{row.carc}</TableCell>
+                        <TableCell className="max-w-[16rem] truncate text-sm" title={row.label}>
+                          {row.label}
+                          <span className="ml-1 text-gray-400">×{row.count}</span>
+                        </TableCell>
+                        <TableCell>
+                          <Badge variant={REMEDY_VARIANT[row.remedy] ?? 'secondary'}>
+                            {row.remedyLabel}
+                          </Badge>
+                        </TableCell>
+                        <TableCell className="text-right tabular-nums">{usd(row.atStake)}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              )
             ) : (
               <EmptyCard title="No denials on the worklist" need="Import a denials export to see this." />
             )}
@@ -313,29 +415,49 @@ export function InsightsView() {
             <CardTitle className="text-base">Recovery</CardTitle>
           </CardHeader>
           <CardContent>
-            {recovery.data && recovery.data.stages.some(s => s.count > 0) ? (
+            {recovery.data && recoveryStages.some(s => s.count > 0) ? (
               <div className="space-y-2">
-                {recovery.data.stages.map(stage => {
-                  const total = recovery.data!.stages.reduce((n, s) => n + s.count, 0) || 1
-                  return (
-                    <div key={stage.status}>
-                      <div className="flex items-baseline justify-between text-sm">
-                        <span className="text-gray-700">{stage.label}</span>
-                        <span className="text-gray-500">
-                          {stage.count} · {usd.format(stage.billed)}
-                        </span>
-                      </div>
-                      <div className="mt-1 h-2 rounded-full bg-gray-100">
-                        <div
-                          className={`h-2 rounded-full ${stage.status === 'PAID' ? 'bg-green-500' : stage.status === 'DEAD' ? 'bg-gray-300' : 'bg-blue-400'}`}
-                          style={{ width: `${(stage.count / total) * 100}%` }}
-                        />
-                      </div>
-                    </div>
-                  )
-                })}
+                {view === 'chart' ? (
+                  <RankedBar
+                    data={recoveryStages.map(stage => ({
+                      key: stage.status,
+                      label: stage.label,
+                      value: stage.count,
+                      note: usd(stage.billed),
+                    }))}
+                    format={v => String(Math.round(v))}
+                    labelWidth={90}
+                    // The pipeline runs To work → Drafted → Sent → Recovered,
+                    // and that sequence is the chart. Ranking it by size would
+                    // shuffle the stages out of the order the ramp encodes.
+                    keepOrder
+                    // Stages are an ordered sequence, so they take the one-hue
+                    // ramp rather than a colour each: the reader should see how
+                    // far along a stage is without reading the labels.
+                    colors={stageFills}
+                  />
+                ) : (
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Stage</TableHead>
+                        <TableHead className="text-right">Denials</TableHead>
+                        <TableHead className="text-right">Billed</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {recoveryStages.map(stage => (
+                        <TableRow key={stage.status}>
+                          <TableCell>{stage.label}</TableCell>
+                          <TableCell className="text-right tabular-nums">{stage.count}</TableCell>
+                          <TableCell className="text-right tabular-nums">{usd(stage.billed)}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                )}
                 <p className="pt-2 text-sm text-gray-600">
-                  {usd.format(recovery.data.recovered)} recovered across{' '}
+                  {usd(recovery.data.recovered)} recovered across{' '}
                   {recovery.data.recoveredCount} denials.
                 </p>
               </div>
@@ -346,6 +468,14 @@ export function InsightsView() {
         </Card>
       </div>
 
+      {/*
+        Directly under the recovery funnel, which is the card it answers. The
+        funnel says how many denials reached "Sent"; this says which of those
+        the payer actually paid, and it is the only thing on this page built
+        from the workspace's own history rather than from an export.
+      */}
+      <AppealOutcomes />
+
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>
           <CardHeader>
@@ -353,30 +483,43 @@ export function InsightsView() {
           </CardHeader>
           <CardContent>
             {(codes.data?.cpt.length ?? 0) > 0 ? (
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead className="w-24">CPT</TableHead>
-                    <TableHead>Description</TableHead>
-                    <TableHead className="text-right">Denied</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {codes.data!.cpt.map(row => (
-                    <TableRow key={row.code}>
-                      <TableCell className="font-mono text-xs">{row.code}</TableCell>
-                      <TableCell className="max-w-[18rem] truncate text-sm text-gray-600">
-                        {/* Blank, not the code echoed back at itself. */}
-                        {row.description ?? <span className="text-gray-400">—</span>}
-                      </TableCell>
-                      <TableCell className="text-right">
-                        {usd.format(row.deniedBilled)}
-                        <span className="ml-1 text-xs text-gray-400">×{row.deniedCount}</span>
-                      </TableCell>
+              view === 'chart' ? (
+                <RankedBar
+                  data={codes.data!.cpt.map(row => ({
+                    key: row.code,
+                    label: row.code,
+                    value: row.deniedBilled,
+                    note: row.description ?? `${row.deniedCount} denied`,
+                  }))}
+                  format={usdCompact}
+                  labelWidth={72}
+                />
+              ) : (
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="w-24">CPT</TableHead>
+                      <TableHead>Description</TableHead>
+                      <TableHead className="text-right">Denied</TableHead>
                     </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
+                  </TableHeader>
+                  <TableBody>
+                    {codes.data!.cpt.map(row => (
+                      <TableRow key={row.code}>
+                        <TableCell className="font-mono text-xs">{row.code}</TableCell>
+                        <TableCell className="max-w-[18rem] truncate text-sm text-gray-600">
+                          {/* Blank, not the code echoed back at itself. */}
+                          {row.description ?? <span className="text-gray-400">—</span>}
+                        </TableCell>
+                        <TableCell className="text-right tabular-nums">
+                          {usd(row.deniedBilled)}
+                          <span className="ml-1 text-xs text-gray-400">×{row.deniedCount}</span>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              )
             ) : (
               <EmptyCard title="No procedure data" need="Import a file with a CPT column to see this." />
             )}
@@ -389,24 +532,37 @@ export function InsightsView() {
           </CardHeader>
           <CardContent>
             {(codes.data?.icd10.length ?? 0) > 0 ? (
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead className="w-28">ICD-10</TableHead>
-                    <TableHead className="text-right">Claims</TableHead>
-                    <TableHead className="text-right">Denied</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {codes.data!.icd10.map(row => (
-                    <TableRow key={row.code}>
-                      <TableCell className="font-mono text-xs">{row.code}</TableCell>
-                      <TableCell className="text-right">{row.count}</TableCell>
-                      <TableCell className="text-right">{usd.format(row.deniedBilled)}</TableCell>
+              view === 'chart' ? (
+                <RankedBar
+                  data={codes.data!.icd10.map(row => ({
+                    key: row.code,
+                    label: row.code,
+                    value: row.deniedBilled,
+                    note: `${row.count} claims`,
+                  }))}
+                  format={usdCompact}
+                  labelWidth={72}
+                />
+              ) : (
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="w-28">ICD-10</TableHead>
+                      <TableHead className="text-right">Claims</TableHead>
+                      <TableHead className="text-right">Denied</TableHead>
                     </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
+                  </TableHeader>
+                  <TableBody>
+                    {codes.data!.icd10.map(row => (
+                      <TableRow key={row.code}>
+                        <TableCell className="font-mono text-xs">{row.code}</TableCell>
+                        <TableCell className="text-right tabular-nums">{row.count}</TableCell>
+                        <TableCell className="text-right tabular-nums">{usd(row.deniedBilled)}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              )
             ) : (
               <EmptyCard title="No diagnosis data" need="Import a file with an ICD-10 column to see this." />
             )}

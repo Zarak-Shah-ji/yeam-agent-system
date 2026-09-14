@@ -15,6 +15,14 @@ export type ImportResult = {
   statusDerived: boolean
   refusedColumns: string[]
   unusedColumns: string[]
+  /** Denied claims carrying a reason code, offered as worklist rows. */
+  deniedWithCarc: number
+  /**
+   * Appeals this upload closed out by itself — see lib/denials/reconcile.ts.
+   * Reported rather than applied silently: an outcome written into the ledger
+   * without telling anybody is one nobody can check.
+   */
+  outcomesResolved?: number
 }
 
 type PreviewField = {
@@ -31,6 +39,12 @@ type PreviewField = {
 type Preview = {
   profile: ImportProfile
   profileConfident: boolean
+  profileSource: 'detected' | 'chosen' | 'corrected'
+  detectedProfile: ImportProfile
+  detectionConfident: boolean
+  detectionEvidence: string[]
+  requestedProfile: ImportProfile | null
+  deniedWithCarc: number
   filename: string
   headers: string[]
   selectableHeaders: { index: number; name: string }[]
@@ -49,7 +63,19 @@ const PROFILE_LABEL: Record<ImportProfile, string> = {
   claims: 'A/R + claims export',
 }
 
+const PROFILE_ARTICLE: Record<ImportProfile, string> = {
+  denials: 'a denials export',
+  claims: 'an A/R export',
+}
+
 const UNMAPPED = '__none__'
+
+/** "Paid and Allowed", "Paid, Allowed and CARC" — for a sentence, not a list. */
+function listColumns(names: string[]): string {
+  const quoted = names.map(n => `“${n}”`)
+  if (quoted.length <= 1) return quoted[0] ?? 'columns'
+  return `${quoted.slice(0, -1).join(', ')} and ${quoted[quoted.length - 1]}`
+}
 
 /**
  * Upload, then confirm what was read, then save.
@@ -86,12 +112,16 @@ export function ImportBox({
   const [preview, setPreview] = useState<Preview | null>(null)
   const [overrides, setOverrides] = useState<Record<string, number>>({})
   const [chosenProfile, setChosenProfile] = useState<ImportProfile | null>(null)
+  // True once the customer has picked from "Read as" themselves. Detection stops
+  // overruling them at that point — otherwise the control could never disagree.
+  const [confirmedProfile, setConfirmedProfile] = useState(false)
 
   function reset() {
     setFile(null)
     setPreview(null)
     setOverrides({})
     setChosenProfile(null)
+    setConfirmedProfile(false)
     setError(null)
   }
 
@@ -99,6 +129,7 @@ export function ImportBox({
     next: File,
     nextProfile?: ImportProfile,
     nextOverrides: Record<string, number> = {},
+    confirmed = false,
   ) {
     setBusy(true)
     setError(null)
@@ -106,6 +137,7 @@ export function ImportBox({
       const body = new FormData()
       body.append('file', next)
       if (nextProfile ?? profile) body.append('profile', (nextProfile ?? profile) as string)
+      if (confirmed) body.append('confirmProfile', 'true')
       if (Object.keys(nextOverrides).length) body.append('mapping', JSON.stringify(nextOverrides))
 
       const res = await fetch('/api/imports/preview', { method: 'POST', body })
@@ -133,6 +165,10 @@ export function ImportBox({
       const body = new FormData()
       body.append('file', file)
       body.append('profile', preview.profile)
+      // The profile being sent is the one the preview above rendered, whether it
+      // was detected, corrected or chosen — so it is confirmed by construction.
+      // The guard on the other end is for a caller that never previewed at all.
+      body.append('confirmProfile', 'true')
       if (Object.keys(overrides).length) body.append('mapping', JSON.stringify(overrides))
 
       const res = await fetch('/api/imports/commit', { method: 'POST', body })
@@ -153,13 +189,14 @@ export function ImportBox({
   function changeField(fieldId: string, value: string) {
     const next = { ...overrides, [fieldId]: value === UNMAPPED ? -1 : Number(value) }
     setOverrides(next)
-    if (file) void runPreview(file, chosenProfile ?? undefined, next)
+    if (file) void runPreview(file, chosenProfile ?? undefined, next, confirmedProfile)
   }
 
   function switchProfile(next: ImportProfile) {
     setChosenProfile(next)
     setOverrides({})
-    if (file) void runPreview(file, next, {})
+    setConfirmedProfile(true)
+    if (file) void runPreview(file, next, {}, true)
   }
 
   /* ------------------------------------------------------------- preview --- */
@@ -167,6 +204,14 @@ export function ImportBox({
   if (preview) {
     const mapped = preview.fields.filter(f => f.headerIndex !== null)
     const unmapped = preview.fields.filter(f => f.headerIndex === null)
+
+    // Three different things can be wrong with the choice above, and they want
+    // three different sentences. Collapsing them into one "check this" warning
+    // is what let an A/R export get imported as denials in the first place.
+    const corrected = preview.profileSource === 'corrected'
+    const overrodeDetection =
+      !corrected && preview.detectionConfident && preview.detectedProfile !== preview.profile
+    const ambiguous = !corrected && !preview.detectionConfident
 
     return (
       <div className="rounded-lg border border-gray-200 bg-white p-4">
@@ -192,7 +237,43 @@ export function ImportBox({
           </div>
         </div>
 
-        {!preview.profileConfident && (
+        {/*
+          Detection overruled the box this file was dropped on. Naming the
+          columns that decided it is the whole point: "could be read either way"
+          gives a customer nothing to check, and the failure it replaces was
+          silent — an A/R export read as denials, after which the Claims page
+          truthfully reports that no claims have been imported.
+        */}
+        {corrected && (
+          <p className="mt-3 flex items-start gap-2 rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+            <span>
+              You dropped this on{' '}
+              <strong>{PROFILE_LABEL[preview.requestedProfile ?? preview.profile]}</strong>, but it
+              has {listColumns(preview.detectionEvidence)} — that&rsquo;s{' '}
+              {PROFILE_ARTICLE[preview.detectedProfile]}. Reading it as{' '}
+              <strong>{PROFILE_LABEL[preview.profile]}</strong>. Change it above only if you are
+              sure.
+            </span>
+          </p>
+        )}
+
+        {/* A deliberate override of a confident detection. Their call, but say what it costs. */}
+        {overrodeDetection && (
+          <p className="mt-3 flex items-start gap-2 rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+            <span>
+              This file&rsquo;s columns say it is {PROFILE_ARTICLE[preview.detectedProfile]} — it has{' '}
+              {listColumns(preview.detectionEvidence)}. You have set it to{' '}
+              <strong>{PROFILE_LABEL[preview.profile]}</strong>.{' '}
+              {preview.profile === 'denials'
+                ? 'Importing an A/R export as denials puts paid claims on your worklist.'
+                : 'Importing denials as a snapshot reports a 100% denial rate.'}
+            </span>
+          </p>
+        )}
+
+        {ambiguous && (
           <p className="mt-3 flex items-start gap-2 rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900">
             <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
             <span>

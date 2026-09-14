@@ -50,4 +50,34 @@ describe('reading an import off a multipart request', () => {
     expect(parsed.kind).toBe('denials')
     expect(parsed.rows).toHaveLength(4)
   })
+
+  it('reads the profile confirmation, defaulting to unconfirmed', async () => {
+    const plain = await readImportUpload(upload('sample-ar-export.csv', { profile: 'denials' }))
+    if (!('upload' in plain)) throw new Error('expected an upload')
+    expect(plain.upload.confirmProfile).toBe(false)
+
+    const confirmed = await readImportUpload(
+      upload('sample-ar-export.csv', { profile: 'denials', confirmProfile: 'true' }),
+    )
+    if (!('upload' in confirmed)) throw new Error('expected an upload')
+    expect(confirmed.upload.confirmProfile).toBe(true)
+  })
+
+  it('flags an unconfirmed profile that contradicts detection, so commit can refuse it', async () => {
+    // Commit turns this into a 409 rather than writing a batch of a kind the
+    // page that called it never displayed.
+    const read = await readImportUpload(upload('sample-ar-export.csv', { profile: 'denials' }))
+    if (!('upload' in read)) throw new Error('expected an upload')
+    const parsed = await parseImport(read.upload)
+    expect(parsed.preview.profileSource).toBe('corrected')
+  })
+
+  it('does not flag it once the form confirms the choice', async () => {
+    const read = await readImportUpload(
+      upload('sample-ar-export.csv', { profile: 'denials', confirmProfile: 'true' }),
+    )
+    if (!('upload' in read)) throw new Error('expected an upload')
+    const parsed = await parseImport(read.upload)
+    expect(parsed.preview.profileSource).toBe('chosen')
+  })
 })

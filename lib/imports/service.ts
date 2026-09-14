@@ -88,10 +88,27 @@ export type PreviewField = {
   sampleParsed: string | null
 }
 
+/**
+ * How the profile in use was arrived at.
+ *
+ * `corrected` is the case worth naming: the caller asked for one profile and a
+ * confident detection said otherwise, so detection won. The upload UI reads this
+ * to explain itself rather than silently importing something else.
+ */
+export type ProfileSource = 'detected' | 'chosen' | 'corrected'
+
 export type PreviewResult = {
   profile: ImportProfile
   /** False when detection had to fall back to a weak signal. */
   profileConfident: boolean
+  profileSource: ProfileSource
+  /** What detection concluded on its own, whatever the caller asked for. */
+  detectedProfile: ImportProfile
+  detectionConfident: boolean
+  /** The columns detection decided on, for a banner that can name them. */
+  detectionEvidence: string[]
+  /** Set when the caller asked for a profile that detection overrode. */
+  requestedProfile: ImportProfile | null
   filename: string
   headers: string[]
   /** Header indexes a field may be pointed at — identifier columns excluded. */
@@ -105,6 +122,13 @@ export type PreviewResult = {
   rowCount: number
   skipped: number
   statusDerived: boolean
+  /**
+   * Claim rows that are denied AND carry a reason code, so an A/R export can
+   * offer its own denials as worklist items at the moment it is imported rather
+   * than only from a banner on the Claims page. Always 0 for a denials import —
+   * see the note on addDeniedToWorklist about why the reverse is not derived.
+   */
+  deniedWithCarc: number
 }
 
 type ParsedDenials = { kind: 'denials'; rows: ClaimRow[]; skipped: number }
@@ -180,12 +204,44 @@ export async function parseImport(options: {
   filename: string
   profile?: ImportProfile
   mappingOverride?: Record<string, number>
+  /**
+   * The caller has seen what detection concluded and still means the profile it
+   * asked for. Without this the "Read as" control would be inert on exactly the
+   * files it exists for: detection would re-correct the choice on every reparse.
+   */
+  confirmProfile?: boolean
 }): Promise<ParsedFile> {
   const { buffer, filename, mappingOverride = {} } = options
   const { headers, dataRows } = await readClaimsTable(buffer, filename)
 
+  // A confident detection beats the box the file was dropped on. The Connect
+  // page forces a profile per box, and an A/R export dropped on the denials box
+  // used to import as denial rows — after which the Claims page truthfully but
+  // uselessly reported that no claims had been imported. The customer can still
+  // override deliberately through the "Read as" control, which re-parses with
+  // the detection already known to disagree.
   const detected = detectProfile(headers)
-  const profile = options.profile ?? detected.profile
+  const requested = options.profile ?? null
+  const overridden =
+    requested !== null &&
+    !options.confirmProfile &&
+    detected.confident &&
+    detected.profile !== requested
+  const profile = overridden ? detected.profile : (requested ?? detected.profile)
+  const profileSource: ProfileSource = overridden
+    ? 'corrected'
+    : requested !== null
+      ? 'chosen'
+      : 'detected'
+
+  const detection = {
+    profileSource,
+    detectedProfile: detected.profile,
+    detectionConfident: detected.confident,
+    detectionEvidence: detected.evidence,
+    requestedProfile: requested,
+    profileConfident: detected.confident && detected.profile === profile,
+  }
 
   const selectableHeaders = headers
     .map((name, index) => ({ index, name: (name ?? '').trim() }))
@@ -205,6 +261,11 @@ export async function parseImport(options: {
         ? { rows: [] as ClaimRecord[], skipped: 0, statusDerived: false }
         : buildClaimRows(dataRows, mapping)
     const columns = reportColumns(headers, mapping)
+    // A row with no reason code cannot be triaged, so it is not work — the same
+    // rule addDeniedToWorklist applies when it derives these for real.
+    const deniedWithCarc = built.rows.filter(
+      r => r.status === 'DENIED' && r.carc && r.carc.trim(),
+    ).length
 
     return {
       kind: 'claims',
@@ -213,7 +274,7 @@ export async function parseImport(options: {
       statusDerived: built.statusDerived,
       preview: {
         profile,
-        profileConfident: detected.confident && detected.profile === profile,
+        ...detection,
         filename,
         headers,
         selectableHeaders,
@@ -233,6 +294,7 @@ export async function parseImport(options: {
         rowCount: built.rows.length,
         skipped: built.skipped,
         statusDerived: built.statusDerived,
+        deniedWithCarc,
       },
     }
   }
@@ -257,7 +319,7 @@ export async function parseImport(options: {
     skipped: built.skipped,
     preview: {
       profile,
-      profileConfident: detected.confident && detected.profile === profile,
+      ...detection,
       filename,
       headers,
       selectableHeaders,
@@ -277,6 +339,7 @@ export async function parseImport(options: {
       rowCount: built.rows.length,
       skipped: built.skipped,
       statusDerived: false,
+      deniedWithCarc: 0,
     },
   }
 }
@@ -291,6 +354,28 @@ export function missingColumnsMessage(preview: PreviewResult): string {
   return (
     `Could not find ${preview.missing.join(' or ')} in that file. ` +
     `Columns read: ${preview.headers.filter(Boolean).join(', ')}`
+  )
+}
+
+const PROFILE_NAME: Record<ImportProfile, string> = {
+  denials: 'a denials export',
+  claims: 'an A/R + claims export',
+}
+
+/**
+ * Why detection overruled the profile the file was dropped on.
+ *
+ * Names the columns that decided it. "This could be read either way" gives a
+ * customer nothing to check; "it has Paid and Allowed columns" tells them
+ * exactly where to look to agree or disagree.
+ */
+export function correctedProfileMessage(preview: PreviewResult): string {
+  const evidence = preview.detectionEvidence
+  const because = evidence.length > 0 ? ` — it has ${evidence.join(' and ')}` : ''
+  const asked = preview.requestedProfile ? PROFILE_NAME[preview.requestedProfile] : 'something else'
+  return (
+    `That file looks like ${PROFILE_NAME[preview.detectedProfile]}${because}, ` +
+    `but it was sent as ${asked}. Check the preview before saving.`
   )
 }
 

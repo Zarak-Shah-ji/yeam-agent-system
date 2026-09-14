@@ -14,6 +14,13 @@ export type ImportUpload = {
   filename: string
   profile?: ImportProfile
   mappingOverride: Record<string, number>
+  /**
+   * The customer has seen what detection concluded and still wants the profile
+   * they asked for. Commit refuses an unconfirmed profile that contradicts a
+   * confident detection, so a stale page cannot save something the preview it
+   * came from never showed.
+   */
+  confirmProfile: boolean
 }
 
 export async function readImportUpload(
@@ -59,6 +66,7 @@ export async function readImportUpload(
       filename: file.name,
       profile,
       mappingOverride,
+      confirmProfile: form.get('confirmProfile') === 'true',
     },
   }
 }

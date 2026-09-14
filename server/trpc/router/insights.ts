@@ -2,12 +2,28 @@ import { z } from 'zod'
 import { router, orgProcedure } from '../trpc'
 import { money } from '@/lib/money'
 import {
+  FACT_ROW_CAP,
   latestClaimsBatch as factsLatestClaimsBatch,
   loadFacts as factsLoadFacts,
   type Facts,
 } from '@/lib/insights/facts'
 import {
+  byArtifact,
+  byCode,
+  byPayer,
+  byPayerAndCode,
+  coverage,
+  tally,
+  type OutcomeRecord,
+} from '@/lib/denials/outcomes'
+import { artifactFor } from '@/lib/billing/appeal-prompt'
+import { getPlaybook } from '@/lib/billing/denial-playbooks'
+import { payerKey } from '@/lib/billing/submission'
+import {
+  AGING_BUCKETS,
+  agingBucketRange,
   arAging,
+  type ClaimFact,
   denialTrend,
   overview,
   payerScorecard,
@@ -87,6 +103,116 @@ function latestClaimsBatch(ctx: Ctx) {
 
 function loadFacts(ctx: Ctx): Promise<Facts> {
   return ctx.once('insights:facts', () => factsLoadFacts(ctx.prisma, ctx.orgId))
+}
+
+type ClaimWhere = Record<string, unknown>
+
+/**
+ * An explicit status and the "unsettled" toggle are both tests on the same
+ * column. Spreading them separately let whichever came second silently win, so
+ * they are intersected here: picking Denied AND unsettled means denied, because
+ * denied is already unsettled; picking Paid AND unsettled means nothing matches,
+ * which is the truthful answer rather than a quietly widened result.
+ */
+function statusFilter(
+  status: (typeof CLAIM_STATUSES)[number] | undefined,
+  unsettled: boolean | undefined,
+): ClaimWhere {
+  const SETTLED = ['PAID', 'WRITTEN_OFF']
+  if (!unsettled) return status ? { status } : {}
+  if (!status) return { status: { notIn: SETTLED } }
+  return SETTLED.includes(status) ? { id: '__none__' } : { status }
+}
+
+/**
+ * Rows whose anchor date falls in a window, reproducing anchorDate()'s coalesce
+ * — service date, else submitted, else remit — as an OR. Testing serviceDate
+ * alone would drop every row that only has a remit date, which the aging chart
+ * still counts.
+ */
+function anchorBetween(range: { from: Date | null; to: Date | null }): ClaimWhere {
+  const within = {
+    ...(range.from ? { gte: range.from } : {}),
+    ...(range.to ? { lte: range.to } : {}),
+  }
+  return {
+    OR: [
+      { serviceDate: within },
+      { serviceDate: null, submittedDate: within },
+      { serviceDate: null, submittedDate: null, remitDate: within },
+    ],
+  }
+}
+
+/**
+ * What the claims table is filtered by, declared once.
+ *
+ * `claimList` and `claimSummary` answer two questions about the same set of
+ * rows — what are they, and what do they add up to — and the strip above the
+ * table is worthless if those two sets can drift apart. Sharing the shape and
+ * the where clause makes that drift a type error rather than a support ticket.
+ *
+ * Paging and sort are not here: they change which rows come back, never which
+ * rows match, and a total that moved when you sorted the table would be wrong.
+ */
+const CLAIM_FILTERS = {
+  status: z.enum(CLAIM_STATUSES).optional(),
+  payer: z.string().optional(),
+  search: z.string().optional(),
+  carc: z.string().optional(),
+  from: z.date().optional(),
+  to: z.date().optional(),
+  /** Aged by the same rule the aging chart uses. */
+  aging: z.enum(AGING_BUCKETS).optional(),
+  /**
+   * Claims the payer has not settled. Expressed as a status test rather
+   * than as billed-minus-paid, because column arithmetic is not
+   * available in a where clause — so the control is labelled
+   * "Unsettled", which is exactly what this does.
+   */
+  unsettled: z.boolean().optional(),
+}
+
+type ClaimFilters = z.infer<z.ZodObject<typeof CLAIM_FILTERS>>
+
+/** The one where clause both claims queries run against. */
+function claimWhere(orgId: string, batchId: string, input: ClaimFilters | undefined): ClaimWhere {
+  const dateFilter =
+    input?.from || input?.to
+      ? {
+          serviceDate: {
+            ...(input.from ? { gte: input.from } : {}),
+            ...(input.to ? { lte: input.to } : {}),
+          },
+        }
+      : {}
+
+  return {
+    orgId,
+    batchId,
+    ...statusFilter(input?.status, input?.unsettled),
+    ...(input?.payer ? { payer: input.payer } : {}),
+    ...(input?.carc ? { carc: input.carc } : {}),
+    ...dateFilter,
+    // Search and aging are both OR-shaped, so they go in an AND array
+    // rather than as two `OR` keys — the second spread would otherwise
+    // silently replace the first, and searching inside an aging bucket
+    // would quietly return the whole bucket.
+    AND: [
+      ...(input?.search
+        ? [
+            {
+              OR: [
+                { claimNumber: { contains: input.search, mode: 'insensitive' as const } },
+                { cpt: { contains: input.search, mode: 'insensitive' as const } },
+                { icd10: { contains: input.search, mode: 'insensitive' as const } },
+              ],
+            },
+          ]
+        : []),
+      ...(input?.aging ? [anchorBetween(agingBucketRange(input.aging, new Date()))] : []),
+    ],
+  }
 }
 
 export const insightsRouter = router({
@@ -215,11 +341,8 @@ export const insightsRouter = router({
     .input(
       z
         .object({
-          status: z.enum(CLAIM_STATUSES).optional(),
-          payer: z.string().optional(),
-          search: z.string().optional(),
-          from: z.date().optional(),
-          to: z.date().optional(),
+          ...CLAIM_FILTERS,
+          sort: z.enum(['newest', 'oldest', 'billed']).default('newest'),
           limit: z.number().min(1).max(200).default(50),
           cursor: z.string().optional(),
         })
@@ -236,29 +359,18 @@ export const insightsRouter = router({
       }
 
       const limit = input?.limit ?? 50
-      const dateFilter =
-        input?.from || input?.to
-          ? { serviceDate: { ...(input.from ? { gte: input.from } : {}), ...(input.to ? { lte: input.to } : {}) } }
-          : {}
+
+      // Sorting is always tie-broken by id: the cursor pages by id, so a
+      // non-unique order would skip or repeat rows across pages.
+      const orderBy = {
+        newest: [{ serviceDate: 'desc' as const }, { id: 'asc' as const }],
+        oldest: [{ serviceDate: 'asc' as const }, { id: 'asc' as const }],
+        billed: [{ billed: 'desc' as const }, { id: 'asc' as const }],
+      }[input?.sort ?? 'newest']
 
       const rows = await ctx.prisma.orgClaim.findMany({
-        where: {
-          orgId: ctx.orgId,
-          batchId: batch.id,
-          ...(input?.status ? { status: input.status } : {}),
-          ...(input?.payer ? { payer: input.payer } : {}),
-          ...(input?.search
-            ? {
-                OR: [
-                  { claimNumber: { contains: input.search, mode: 'insensitive' as const } },
-                  { cpt: { contains: input.search, mode: 'insensitive' as const } },
-                  { icd10: { contains: input.search, mode: 'insensitive' as const } },
-                ],
-              }
-            : {}),
-          ...dateFilter,
-        },
-        orderBy: [{ serviceDate: 'desc' }, { id: 'asc' }],
+        where: claimWhere(ctx.orgId, batch.id, input),
+        orderBy,
         take: limit + 1,
         cursor: input?.cursor ? { id: input.cursor } : undefined,
         skip: input?.cursor ? 1 : 0,
@@ -308,6 +420,82 @@ export const insightsRouter = router({
     }),
 
   /**
+   * What the rows under the current filters add up to.
+   *
+   * The claims table opens on six empty dropdowns and a hundred rows of equal
+   * weight, which asks the reader to already know what is wrong before it will
+   * help them. This is the sentence that page was missing: how much is out
+   * there, how old it is, and how much of it nobody has settled.
+   *
+   * Aged with `arAging`, the same function behind the Analytics chart, so the
+   * strip and that chart cannot report different money for the same snapshot.
+   *
+   * Summed over the filtered set rather than the whole snapshot, so narrowing to
+   * one payer re-totals to that payer. That costs a scan the paged table does
+   * not do, which is why it is capped and says so — see `truncated`.
+   */
+  claimSummary: orgProcedure
+    .input(z.object(CLAIM_FILTERS).optional())
+    .query(async ({ ctx, input }) => {
+      const empty = {
+        count: 0,
+        billed: 0,
+        outstanding: 0,
+        denied: 0,
+        deniedBilled: 0,
+        buckets: AGING_BUCKETS.map(bucket => ({ bucket, amount: 0, count: 0 })),
+        undated: { amount: 0, count: 0 },
+        truncated: false,
+      }
+
+      const batch = await latestClaimsBatch(ctx)
+      if (!batch) return empty
+
+      const rows = await ctx.prisma.orgClaim.findMany({
+        where: claimWhere(ctx.orgId, batch.id, input),
+        // Only what the totals and the buckets need. This reads more rows than
+        // the table does, so it must not also read more columns.
+        select: {
+          status: true,
+          billed: true,
+          paid: true,
+          adjustment: true,
+          serviceDate: true,
+          submittedDate: true,
+          remitDate: true,
+        },
+        take: FACT_ROW_CAP,
+      })
+      if (rows.length === 0) return empty
+
+      const claims = rows.map(row => ({
+        status: row.status as ClaimFact['status'],
+        billed: money(row.billed),
+        paid: row.paid === null ? null : money(row.paid),
+        adjustment: row.adjustment === null ? null : money(row.adjustment),
+        serviceDate: row.serviceDate,
+        submittedDate: row.submittedDate,
+        remitDate: row.remitDate,
+      }))
+
+      const aging = arAging(claims, new Date())
+      const denials = claims.filter(c => c.status === 'DENIED')
+
+      return {
+        count: claims.length,
+        billed: Math.round(claims.reduce((sum, c) => sum + c.billed, 0) * 100) / 100,
+        outstanding: Math.round(aging.total * 100) / 100,
+        denied: denials.length,
+        deniedBilled: Math.round(denials.reduce((sum, c) => sum + c.billed, 0) * 100) / 100,
+        buckets: aging.buckets,
+        undated: aging.undated,
+        // The same caveat the rest of the app shows rather than carries: a
+        // total that silently stopped at the cap reads as the whole answer.
+        truncated: rows.length === FACT_ROW_CAP,
+      }
+    }),
+
+  /**
    * Denied claims in the snapshot that are not on the worklist yet.
    *
    * Offered as an explicit action rather than imported automatically: a customer
@@ -335,6 +523,71 @@ export const insightsRouter = router({
     return {
       count: missing.length,
       billed: Math.round(missing.reduce((sum, d) => sum + money(d.billed), 0) * 100) / 100,
+    }
+  }),
+
+  /**
+   * What actually got paid, by payer, by reason code, by instrument.
+   *
+   * Every other query in this file measures the practice. This one measures the
+   * payers — and it is the only thing in the product that could not be rebuilt
+   * from a fresh export tomorrow, because it is assembled from what this
+   * workspace sent and what came back, one appeal at a time. There is no file to
+   * re-upload it from if it is lost.
+   *
+   * Reads submissions rather than rows on purpose. A row that ends up paid says
+   * the claim was recovered; the submissions say which of the two letters did
+   * it, and that is the part worth knowing.
+   *
+   * The whole aggregate is computed on read by lib/denials/outcomes.ts, the same
+   * discipline as every other number here: a stored win rate is a number about
+   * the day it was written, and this one moves every time a determination lands.
+   */
+  appealOutcomes: orgProcedure.query(async ({ ctx }) => {
+    const submissions = await ctx.prisma.denialSubmission.findMany({
+      where: { orgId: ctx.orgId },
+      // Capped like loadFacts is, and for the same reason — but ordered so the
+      // cap drops the oldest attempts rather than an arbitrary slice, and the
+      // response says when it bit.
+      orderBy: { sentAt: 'desc' },
+      take: FACT_ROW_CAP,
+      select: {
+        channel: true,
+        sentAt: true,
+        outcome: true,
+        outcomeAt: true,
+        outcomeCarc: true,
+        amountRecovered: true,
+        row: { select: { payer: true, carc: true, cpt: true, billed: true } },
+      },
+    })
+
+    // The instrument is not a column on the submission: artifactFor() derives it
+    // from the reason code, the same call the drafting path makes, so correcting
+    // a CARC mapping re-labels the history instead of leaving it wrong forever.
+    const records: OutcomeRecord[] = submissions.map(s => ({
+      payerKey: payerKey(s.row.payer),
+      payerLabel: s.row.payer,
+      carc: s.row.carc,
+      cpt: s.row.cpt,
+      artifact: artifactFor(getPlaybook(s.row.carc)),
+      channel: s.channel,
+      outcome: s.outcome,
+      sentAt: s.sentAt,
+      outcomeAt: s.outcomeAt,
+      billed: money(s.row.billed),
+      amountRecovered: s.amountRecovered === null ? null : money(s.amountRecovered),
+      outcomeCarc: s.outcomeCarc,
+    }))
+
+    return {
+      coverage: coverage(records),
+      overall: tally(records),
+      byPayerAndCode: byPayerAndCode(records).slice(0, 50),
+      byPayer: byPayer(records).slice(0, 25),
+      byCode: byCode(records).slice(0, 25),
+      byArtifact: byArtifact(records),
+      truncated: submissions.length === FACT_ROW_CAP,
     }
   }),
 })
