@@ -67,6 +67,18 @@ describe('Auth configuration — error=Configuration regression guard', () => {
     expect(events).toMatch(/lastLoginAt/)
   })
 
+  it('trusts Google that the address is verified', () => {
+    // Google will not release an address it has not verified and reports that
+    // as email_verified. Auth.js discards it — the OAuth branch of handle-login
+    // calls createUser({ ...profile, emailVerified: null }) with the null last,
+    // so a custom profile() mapping cannot survive it. The stamp therefore has
+    // to happen after the row exists, in the events block, or every OAuth
+    // account stays unverified forever despite arriving pre-verified.
+    const events = authConfig.slice(authConfig.indexOf('events: {'))
+    expect(events).toMatch(/email_verified/)
+    expect(events).toMatch(/emailVerified/)
+  })
+
   it('provisions a workspace for OAuth signups', () => {
     // The Prisma adapter creates the user row and knows nothing about orgs. A
     // user without one cannot reach any org-scoped query, so an OAuth signup

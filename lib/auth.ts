@@ -112,11 +112,37 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     // user.id is real whether this is the first sign-in or the hundredth.
     // Best-effort, like the backfill above: a failed stamp must never cost
     // someone their login.
-    async signIn({ user }) {
+    async signIn({ user, account, profile }) {
       if (!user.id) return
+
       await prisma.user
         .update({ where: { id: user.id }, data: { lastLoginAt: new Date() } })
         .catch(() => {})
+
+      // Trust Google's word that the address is real.
+      //
+      // Google will not hand over an address it has not verified, and says so
+      // with email_verified in the profile. Auth.js throws that away: the OAuth
+      // branch of handle-login calls createUser({ ...profile, emailVerified:
+      // null }) with the null LAST, so it overrides anything a custom profile()
+      // mapping returns. The only place left to record it is after the row
+      // exists, which is here.
+      //
+      // Checked per sign-in rather than only on creation, so an account that
+      // predates this — or one linked by email before it was verified — picks
+      // the stamp up on its next visit instead of staying null forever.
+      //
+      // updateMany, with emailVerified: null in the where, so the first
+      // verification keeps its own timestamp rather than being reset every time
+      // this runs. A no-op once it is set.
+      if (account?.provider === 'google' && profile?.email_verified) {
+        await prisma.user
+          .updateMany({
+            where: { id: user.id, emailVerified: null },
+            data: { emailVerified: new Date() },
+          })
+          .catch(() => {})
+      }
     },
   },
   providers: [
