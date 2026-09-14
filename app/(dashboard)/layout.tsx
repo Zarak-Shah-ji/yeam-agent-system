@@ -1,5 +1,8 @@
 import { redirect } from 'next/navigation'
 import { auth } from '@/lib/auth'
+import { prisma } from '@/lib/db'
+import { EMAIL_AVAILABLE } from '@/lib/email/client'
+import { VerifyEmailBanner } from '@/components/layout/VerifyEmailBanner'
 import { SidebarProvider } from '@/components/layout/sidebar-context'
 import { ChatProvider } from '@/components/layout/chat-context'
 import { SessionProviderWrapper } from '@/components/layout/SessionProviderWrapper'
@@ -19,6 +22,23 @@ export default async function DashboardLayout({
   const session = await auth()
   if (!session?.user) {
     redirect('/login')
+  }
+
+  // Resolved here rather than in the banner itself: a client query would flash
+  // the banner in a frame after the page had already rendered without it, which
+  // reads as a glitch rather than as a notice.
+  //
+  // Guarded on EMAIL_AVAILABLE so this costs nothing while no mail provider is
+  // configured — there is no point telling someone to confirm an address when
+  // the deployment cannot send them anything to confirm it with, and the query
+  // is skipped entirely rather than run and discarded.
+  let unverifiedEmail: string | null = null
+  if (EMAIL_AVAILABLE && session.user.id) {
+    const account = await prisma.user.findUnique({
+      where: { id: session.user.id },
+      select: { email: true, emailVerified: true },
+    })
+    if (account && !account.emailVerified) unverifiedEmail = account.email
   }
 
   return (
@@ -45,6 +65,7 @@ export default async function DashboardLayout({
           <div className="flex flex-1 overflow-hidden min-w-0">
             {/* Page content */}
             <main className="flex-1 overflow-y-auto p-4 md:p-6 min-w-0">
+              {unverifiedEmail && <VerifyEmailBanner email={unverifiedEmail} />}
               {children}
             </main>
 
