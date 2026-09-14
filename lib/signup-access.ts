@@ -15,7 +15,10 @@
  * substitute for real tenancy and role enforcement.
  */
 
-/** Parse the allowlist: full addresses, or "@domain.com" for a whole domain. */
+/**
+ * Parse the allowlist: full addresses, "@domain.com" for a whole domain, or the
+ * single entry "*" to open registration to anyone.
+ */
 function allowlist(): string[] {
   return (process.env.SIGNUP_ALLOWED_EMAILS ?? '')
     .split(',')
@@ -31,8 +34,16 @@ export function signupAllowed(email: string | null | undefined): boolean {
   const entries = allowlist()
   if (entries.length === 0) return false
 
+  // "*" opens registration to anyone. It is an explicit entry rather than a
+  // separate boolean var so that opening and closing the door stay one setting:
+  // there is no state where an OPEN_SIGNUP flag and an allowlist disagree, and
+  // closing it again is an edit to this one value, not a code change.
   return entries.some(entry =>
-    entry.startsWith('@') ? address.endsWith(entry) : entry === address,
+    entry === '*'
+      ? true
+      : entry.startsWith('@')
+        ? address.endsWith(entry)
+        : entry === address,
   )
 }
 
