@@ -19,9 +19,11 @@ function getSnapshot(): Theme {
   return document.documentElement.classList.contains(THEME_CLASS) ? 'dark' : 'light'
 }
 
-// Server-rendered markup is the light one; the script corrects it before paint.
+// The server renders one HTML for everyone, so this is the default rather than
+// the viewer's theme: dark, matching the bootstrap script. A viewer who stored
+// 'light' is corrected on hydration, one render later.
 function getServerSnapshot(): Theme {
-  return 'light'
+  return 'dark'
 }
 
 export function useTheme() {
