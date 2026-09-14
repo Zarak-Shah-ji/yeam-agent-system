@@ -15,6 +15,7 @@ import { BAND_LABEL, type PriorityBand } from '@/lib/denials/score'
 import { ImportBox, type ImportResult } from '@/components/imports/ImportBox'
 import { ImportSummary } from '@/components/imports/ImportSummary'
 import { NoWorkspace, isNoWorkspace } from '@/components/insights/NoWorkspace'
+import { UsageBanner } from '@/components/subscription/Upgrade'
 import { DraftDialog } from './DraftDialog'
 import { QueueChart } from './QueueChart'
 import { SearchBar } from './SearchBar'
@@ -337,6 +338,8 @@ export function WorklistView() {
           </div>
         )}
       </div>
+
+      <UsageBanner />
 
       <OpenLoopBanner onShowSent={() => setStatusFilter('SENT')} />
 

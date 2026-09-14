@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { requireOrg } from '@/lib/org'
 import { prisma } from '@/lib/db'
 import { readImportUpload } from '@/lib/imports/request'
+import { MAX_IMPORT_ROWS } from '@/lib/imports/table'
 import {
   ClaimsFileError,
   correctedProfileMessage,
@@ -145,6 +146,18 @@ export async function POST(request: Request) {
               : 'No rows in that file carried an amount or a date, so there is nothing to measure.',
         },
         { status: 422 },
+      )
+    }
+
+    if (parsed.rows.length > MAX_IMPORT_ROWS) {
+      // Deliberately not phrased as an upgrade wall. A book this size is a
+      // billing company rather than a single practice, and that is a
+      // conversation to have, not a checkout button to show.
+      return NextResponse.json(
+        {
+          error: `That file carries ${parsed.rows.length.toLocaleString()} usable rows, and a self-serve workspace takes ${MAX_IMPORT_ROWS.toLocaleString()} per upload. Split it by date range, or get in touch and we will set the workspace up for the whole book.`,
+        },
+        { status: 413 },
       )
     }
 

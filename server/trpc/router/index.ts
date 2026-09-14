@@ -8,6 +8,7 @@ import { claimsRouter } from './claims'
 import { importsRouter } from './imports'
 import { connectionsRouter } from './connections'
 import { settingsRouter } from './settings'
+import { subscriptionRouter } from './subscription'
 
 /**
  * Every router here is org-scoped (see orgProcedure) except `auth`, which is
@@ -23,6 +24,7 @@ export const appRouter = router({
   imports: importsRouter,
   connections: connectionsRouter,
   settings: settingsRouter,
+  subscription: subscriptionRouter,
 })
 
 export type AppRouter = typeof appRouter

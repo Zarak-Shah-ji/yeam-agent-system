@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { TRPCError } from '@trpc/server'
+import { canReviewCodes, upgradeMessage } from '@/lib/plans'
 import { router, orgProcedure } from '../trpc'
 import { latestClaimsBatch } from '@/lib/insights/facts'
 import { anchorDate, bucketFor, daysBetween, outstanding } from '@/lib/insights/aggregate'
@@ -489,11 +490,27 @@ export const claimsRouter = router({
   review: orgProcedure
     .input(z.object({ claimNumber: z.string().min(1) }))
     .mutation(async ({ ctx, input }) => {
-      const { claim, work, signals } = await loadCodeContext(ctx, input.claimNumber)
+      const [{ claim, work, signals }, org] = await Promise.all([
+        loadCodeContext(ctx, input.claimNumber),
+        ctx.prisma.organization.findUnique({
+          where: { id: ctx.orgId },
+          select: { plan: true },
+        }),
+      ])
       const hash = signalsHash(signals)
 
       if (work?.reviewBody && work.reviewFactsHash === hash) {
         return { body: work.reviewBody, at: work.reviewedAt, cached: true }
+      }
+
+      // Gated after the cache check, not before: a review already generated is
+      // already served free by claims.signals, so hiding it here would only be
+      // inconsistent. What a plan buys is the model call, not the history.
+      if (!canReviewCodes(org?.plan ?? 'TRIAGE')) {
+        throw new TRPCError({
+          code: 'TOO_MANY_REQUESTS',
+          message: upgradeMessage('Reading the code signals back in words is a paid feature.'),
+        })
       }
 
       const carcCode = work?.correctedCarc ?? claim.carc

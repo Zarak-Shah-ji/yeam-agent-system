@@ -7,6 +7,7 @@ import { SUBMISSION_CHANNELS, type SubmissionChannelValue } from '@/lib/billing/
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
+import { UpgradeButton } from '@/components/subscription/Upgrade'
 
 /**
  * The two things a workspace has to tell us before a letter is sendable.
@@ -319,9 +320,90 @@ function PayerDestinations() {
   )
 }
 
+/**
+ * The plan, what it has been used for, and the way out.
+ *
+ * Shows the allowance even on an uncapped plan, because "unlimited" is only
+ * reassuring next to a number. The portal link is the important half: a
+ * customer who cannot find how to cancel reads the whole product as a trap, and
+ * the support email it saves is the one nobody enjoys answering.
+ */
+function PlanAndUsage() {
+  const state = trpc.subscription.state.useQuery()
+  const usage = trpc.worklist.usage.useQuery()
+  const [leaving, setLeaving] = useState(false)
+  const portal = trpc.subscription.portal.useMutation({
+    onSuccess: ({ url }) => {
+      setLeaving(true)
+      window.location.href = url
+    },
+  })
+
+  if (state.isLoading || usage.isLoading) {
+    return <p className="text-sm text-gray-500">Loading…</p>
+  }
+
+  const u = usage.data
+  const resets = u
+    ? new Date(u.resetsAt).toLocaleDateString('en-US', { month: 'long', day: 'numeric' })
+    : ''
+
+  return (
+    <div className="rounded-lg border border-gray-200 p-4">
+      <h2 className="font-semibold text-gray-900">Plan and usage</h2>
+      <p className="mt-1 text-sm text-gray-500">
+        Uploading, triage and the numbers are never metered. What counts against a plan is a denial
+        worked — and a denial counts once, however many times its letter is redrafted.
+      </p>
+
+      <dl className="mt-4 grid gap-3 sm:grid-cols-3">
+        <div>
+          <dt className="text-xs font-medium text-gray-600">Plan</dt>
+          <dd className="mt-0.5 text-sm text-gray-900">{state.data?.planLabel ?? 'Triage'}</dd>
+        </div>
+        <div>
+          <dt className="text-xs font-medium text-gray-600">Worked this month</dt>
+          <dd className="mt-0.5 text-sm text-gray-900">
+            {u?.limit === null ? `${u?.used ?? 0} — no cap` : `${u?.used ?? 0} of ${u?.limit}`}
+          </dd>
+        </div>
+        <div>
+          <dt className="text-xs font-medium text-gray-600">
+            {u?.limit === null ? 'Worked all time' : 'Allowance resets'}
+          </dt>
+          <dd className="mt-0.5 text-sm text-gray-900">
+            {u?.limit === null ? (u?.denialsWorkedAllTime ?? 0) : resets}
+          </dd>
+        </div>
+      </dl>
+
+      <div className="mt-4 flex flex-wrap items-center gap-2">
+        {state.data?.plan === 'TRIAGE' ? <UpgradeButton>Upgrade to Practice</UpgradeButton> : null}
+        {state.data?.hasBillingAccount ? (
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={portal.isPending || leaving}
+            onClick={() => portal.mutate()}
+          >
+            {portal.isPending || leaving ? 'Opening…' : 'Manage billing'}
+          </Button>
+        ) : null}
+      </div>
+
+      {portal.error ? (
+        <p className="mt-2 text-xs text-red-600" role="alert">
+          {portal.error.message}
+        </p>
+      ) : null}
+    </div>
+  )
+}
+
 export function SettingsView() {
   return (
     <div className="space-y-4">
+      <PlanAndUsage />
       <PracticeForm />
       <PayerDestinations />
     </div>

@@ -301,6 +301,21 @@ model Organization {
   contactFax   String?
   contactEmail String?
 
+  // ─ Subscription ────────────────────────────────────────────────────────────
+  //
+  // What Stripe knows about this workspace. `plan` above stays the only thing
+  // the app reads to decide what is allowed — these four exist so a webhook can
+  // find the workspace an event belongs to, and so Settings can link someone to
+  // their own billing portal without another Stripe round-trip.
+  //
+  // Deliberately NOT a source of entitlement on its own: if Stripe says active
+  // and `plan` says TRIAGE, the customer is on TRIAGE and the webhook that was
+  // supposed to reconcile them has a bug worth finding.
+  stripeCustomerId     String?   @unique
+  stripeSubscriptionId String?   @unique
+  subscriptionStatus   String?
+  currentPeriodEnd     DateTime?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 

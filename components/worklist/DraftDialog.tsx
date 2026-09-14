@@ -6,6 +6,8 @@ import { trpc } from '@/lib/trpc/client'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
+import { UpgradeWall } from '@/components/subscription/Upgrade'
+import { isUpgradeRequired } from '@/lib/plans'
 import { RowDetail, dateFromInput, type PendingWork } from './RowDetail'
 import { SendPanel } from './SendPanel'
 import type { WorklistRow } from './types'
@@ -116,10 +118,30 @@ export function DraftDialog({
     },
   })
 
+  const usage = trpc.worklist.usage.useQuery(undefined, { enabled: open })
+
   const versions = drafts.data ?? []
   const current = versions[versions.length - 1]
   const busy = draft.isPending || revise.isPending
-  const error = draft.error?.message ?? revise.error?.message
+
+  /*
+    Whether this row is behind the month's allowance.
+
+    A row with a draft already on it has been counted — DenialWorkedEvent is
+    unique per row and written with the first draft — so it stays fully workable
+    at the limit. Only a row that has never been drafted would spend a new unit,
+    and the absence of a draft is exactly how the client can tell.
+
+    The server refuses either way; this is so the customer sees the wall instead
+    of a button that fails.
+  */
+  const walled = !current && (usage.data?.atLimit ?? false)
+
+  // An upgrade refusal is rendered as the wall, not as red text. Every other
+  // failure still shows as an error, because it is one.
+  const error =
+    (isUpgradeRequired(draft.error) ? undefined : draft.error?.message) ??
+    revise.error?.message
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -146,7 +168,16 @@ export function DraftDialog({
 
         <div className="border-t border-gray-200 pt-4" />
 
-        {!current && !drafts.isLoading && (
+        {walled && !drafts.isLoading && (
+          <UpgradeWall
+            title={`All ${usage.data?.limit} denials for this month have been worked`}
+            body="Everything already here stays open — the queue, the numbers, and every letter
+              already drafted, including revising and sending them. Upgrade to draft new ones now,
+              or carry on when the allowance resets."
+          />
+        )}
+
+        {!current && !walled && !drafts.isLoading && (
           <div className="py-8 text-center">
             <p className="text-sm text-gray-600">
               Yeam will pick the right instrument for this denial code — an appeal, a corrected

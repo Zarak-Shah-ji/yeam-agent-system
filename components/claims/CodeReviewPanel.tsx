@@ -5,6 +5,8 @@ import { Check, Loader2, Sparkles } from 'lucide-react'
 import { trpc } from '@/lib/trpc/client'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { UpgradeButton, PlanChip } from '@/components/subscription/Upgrade'
+import { isUpgradeRequired, upgradeReason } from '@/lib/plans'
 import { Skeleton } from '@/components/ui/skeleton'
 
 const SCOPE_LABEL: Record<string, string> = {
@@ -159,7 +161,16 @@ export function CodeReviewPanel({
       )}
 
       <div className="mt-3 flex flex-wrap items-center gap-2">
-        {available ? (
+        {isUpgradeRequired(review.error) ? (
+          // The plan wall, shown where the button was. Everything above this —
+          // the computed signals — is free and stays on the screen, so the wall
+          // covers the reading and not the evidence.
+          <>
+            <PlanChip label="Practice plan" />
+            <p className="text-xs text-gray-500">{upgradeReason(review.error)}</p>
+            <UpgradeButton variant="outline">Upgrade</UpgradeButton>
+          </>
+        ) : available ? (
           <Button
             size="sm"
             variant="outline"
@@ -185,7 +196,7 @@ export function CodeReviewPanel({
         )}
       </div>
 
-      {review.error && (
+      {review.error && !isUpgradeRequired(review.error) && (
         <p className="mt-2 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700" role="alert">
           {review.error.message}
         </p>

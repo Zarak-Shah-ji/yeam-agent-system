@@ -72,8 +72,31 @@ export function parseDate(raw: string): Date | null {
 
 /* ------------------------------------------------------ reading the file --- */
 
-/** Anything larger is a report, not a claims export. */
+/**
+ * Anything larger is a report, not a claims export.
+ *
+ * NOTE: Vercel caps a serverless request body at roughly 4.5 MB, so a file
+ * between that and this limit fails at the platform edge before this check ever
+ * runs, with an error that says nothing useful. lib/appeals/parse-upload.ts
+ * stays under the platform cap deliberately; this path predates that and does
+ * not. Left as-is rather than quietly tightened — narrowing it is a product
+ * decision about which exports we accept, not a cleanup.
+ */
 export const MAX_CLAIMS_FILE_BYTES = 8 * 1024 * 1024
+
+/**
+ * The most rows one upload may save into a workspace.
+ *
+ * An abuse ceiling, NOT the paywall. What is metered is denials worked
+ * (lib/plans.ts) — capping the import instead would wall the largest practices
+ * first, before they had recovered a dollar, and would truncate the analytics
+ * into numbers that understate the customer's own book.
+ *
+ * So this is set where no real practice export reaches it, and the refusal is
+ * an invitation to talk rather than an upgrade wall. A book bigger than this is
+ * a billing company, which is a conversation we want to have.
+ */
+export const MAX_IMPORT_ROWS = 5_000
 
 export class ClaimsFileError extends Error {
   constructor(message: string) {

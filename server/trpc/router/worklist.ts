@@ -19,6 +19,7 @@ import {
 import { reviseAppealLetter } from '@/lib/billing/revise-appeal'
 import { SUBMISSION_OUTCOMES, rowStatusForOutcome } from '@/lib/denials/outcomes'
 import { money } from '@/lib/money'
+import { draftAllowance, upgradeMessage } from '@/lib/plans'
 
 /**
  * The saved worklist.
@@ -34,6 +35,17 @@ import { money } from '@/lib/money'
  */
 
 const STATUSES = ['TO_WORK', 'DRAFTED', 'SENT', 'PAID', 'DEAD'] as const
+
+/**
+ * The first instant of the current calendar month, in the server's local zone.
+ *
+ * The free allowance resets on the 1st and both the wall and the meter have to
+ * agree on when that is, so they read it from here rather than each building
+ * their own date.
+ */
+function startOfMonth(now: Date): Date {
+  return new Date(now.getFullYear(), now.getMonth(), 1)
+}
 
 
 type PersistedRow = {
@@ -803,11 +815,12 @@ export const worklistRouter = router({
       // it the model was left to guess at a signature block and did exactly that
       // — inventing a plausible practice name, which is worse than the
       // [PRACTICE NAME] placeholder because nobody catches it before it is sent.
-      const [row, practice] = await Promise.all([
+      const [row, practice, workedThisMonth] = await Promise.all([
         saveAndLoadRow(ctx, input),
         ctx.prisma.organization.findUnique({
           where: { id: ctx.orgId },
           select: {
+            plan: true,
             practiceName: true,
             npi: true,
             tin: true,
@@ -820,7 +833,36 @@ export const worklistRouter = router({
             contactPhone: true,
           },
         }),
+        ctx.prisma.denialWorkedEvent.count({
+          where: { orgId: ctx.orgId, createdAt: { gte: startOfMonth(new Date()) } },
+        }),
       ])
+
+      // The wall, checked here so a refused draft never spends a model call.
+      //
+      // Only a *new* billable unit is refused. A denial already counted stays
+      // draftable, because the alternative is locking a biller out of the letter
+      // they already spent the allowance on. DenialWorkedEvent is unique per
+      // row, so redrafting one can never consume a second unit anyway.
+      const allowance = draftAllowance(practice?.plan ?? 'TRIAGE', workedThisMonth)
+      if (allowance.atLimit) {
+        const alreadyWorked = await ctx.prisma.denialWorkedEvent.findFirst({
+          where: { rowId: row.id, orgId: ctx.orgId },
+          select: { id: true },
+        })
+        if (!alreadyWorked) {
+          // Deliberately not FORBIDDEN: isNoWorkspace() in
+          // components/insights/NoWorkspace.tsx matches that code and would
+          // render this as "this account has no workspace" — wrong, and not
+          // something the reader could act on.
+          throw new TRPCError({
+            code: 'TOO_MANY_REQUESTS',
+            message: upgradeMessage(
+              `This workspace has worked all ${allowance.limit} of its denials this month.`,
+            ),
+          })
+        }
+      }
 
       const drafted = await draftResponseForRow(
         {
@@ -931,16 +973,28 @@ export const worklistRouter = router({
    */
   usage: orgProcedure.query(async ({ ctx }) => {
     const now = new Date()
-    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1)
+    const monthStart = startOfMonth(now)
 
     const [org, thisMonth, allTime] = await Promise.all([
-      ctx.prisma.organization.findUnique({ where: { id: ctx.orgId } }),
+      ctx.prisma.organization.findUnique({
+        where: { id: ctx.orgId },
+        select: { plan: true },
+      }),
       ctx.prisma.denialWorkedEvent.count({
         where: { orgId: ctx.orgId, createdAt: { gte: monthStart } },
       }),
       ctx.prisma.denialWorkedEvent.count({ where: { orgId: ctx.orgId } }),
     ])
 
-    return { plan: org?.plan ?? 'TRIAGE', denialsWorkedThisMonth: thisMonth, denialsWorkedAllTime: allTime }
+    // The allowance is computed, never stored — same rule as every other derived
+    // number here. A limit written to the database is wrong the moment the plan
+    // changes, and the plan changes from a Stripe webhook we do not control.
+    return {
+      ...draftAllowance(org?.plan ?? 'TRIAGE', thisMonth),
+      // The 1st of next month. Month 12 rolls the year over on its own.
+      resetsAt: new Date(now.getFullYear(), now.getMonth() + 1, 1),
+      denialsWorkedThisMonth: thisMonth,
+      denialsWorkedAllTime: allTime,
+    }
   }),
 })
