@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
+import { auth } from '@/lib/auth'
 import { consumeVerificationToken } from '@/lib/email/verification'
 
 export const runtime = 'nodejs'
@@ -24,7 +25,18 @@ export const runtime = 'nodejs'
  */
 export async function GET(req: NextRequest) {
   const token = req.nextUrl.searchParams.get('token') ?? ''
-  const done = (status: string) => NextResponse.redirect(new URL(`/?verified=${status}`, req.url))
+
+  // Where to land depends on whether this browser is signed in, because the
+  // link is very often opened somewhere that is not.
+  //
+  // Not "/": that redirects to /worklist and the query string does not survive
+  // it, so the outcome would be silently dropped. And not /worklist when there
+  // is no session: the dashboard layout would bounce to /login and lose it the
+  // same way. Both destinations read ?verified= and say what happened.
+  const session = await auth()
+  const home = session?.user ? '/worklist' : '/login'
+  const done = (status: string) =>
+    NextResponse.redirect(new URL(`${home}?verified=${status}`, req.url))
 
   const email = await consumeVerificationToken(prisma, token)
 

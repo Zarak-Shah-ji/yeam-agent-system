@@ -15,6 +15,7 @@ export default function LoginPage() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
   const [loading, setLoading] = useState(false)
   const router = useRouter()
 
@@ -30,7 +31,23 @@ export default function LoginPage() {
   // component with no Suspense boundary, and useSearchParams would opt the
   // whole route out of static rendering to deliver one query param.
   useEffect(() => {
-    const code = new URLSearchParams(window.location.search).get('error')
+    const params = new URLSearchParams(window.location.search)
+
+    // A confirmation link opened on a device that is not signed in lands here
+    // rather than on the dashboard, so the outcome has to be reported here too
+    // — otherwise confirming your email on your phone looks like nothing
+    // happened. See app/api/auth/verify-email.
+    const verified = params.get('verified')
+    if (verified === 'ok') {
+      setNotice('Your email is confirmed. Sign in to continue.')
+      return
+    }
+    if (verified === 'invalid') {
+      setError('That confirmation link has already been used or has expired.')
+      return
+    }
+
+    const code = params.get('error')
     if (!code) return
     setError(
       code === 'AccessDenied'
@@ -105,6 +122,11 @@ export default function LoginPage() {
             autoComplete="current-password"
           />
 
+          {notice && (
+            <p className="rounded-lg border border-[#05DBF0]/30 bg-[#05DBF0]/10 px-3 py-2 text-sm text-[#9DF0FA]">
+              {notice}
+            </p>
+          )}
           {error && <AuthError>{error}</AuthError>}
 
           <Button
