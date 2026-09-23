@@ -9,10 +9,13 @@ import { isEntitling, planForPrice, planFromSubscription, scheduledCancellation,
  */
 
 const PRICE = 'price_practice_test'
+const GROUP_PRICE = 'price_group_test'
 const original = process.env.STRIPE_PRICE_PRACTICE
+const originalGroup = process.env.STRIPE_PRICE_GROUP
 
 afterEach(() => {
   process.env.STRIPE_PRICE_PRACTICE = original
+  process.env.STRIPE_PRICE_GROUP = originalGroup
 })
 
 describe('planForPrice', () => {
@@ -22,6 +25,20 @@ describe('planForPrice', () => {
     // GROUP and NETWORK are contracts, not a checkout button.
     expect(planForPrice('price_some_other_thing')).toBeNull()
     expect(planForPrice(null)).toBeNull()
+  })
+
+  it('maps a Group subscription created from the dashboard', () => {
+    // Group is not sold through checkout, but its events still reach the webhook.
+    process.env.STRIPE_PRICE_PRACTICE = PRICE
+    process.env.STRIPE_PRICE_GROUP = GROUP_PRICE
+    expect(planForPrice(GROUP_PRICE)).toBe('GROUP')
+    expect(planFromSubscription('active', GROUP_PRICE)).toBe('GROUP')
+  })
+
+  it('does not match Group while its price is unconfigured', () => {
+    process.env.STRIPE_PRICE_PRACTICE = PRICE
+    delete process.env.STRIPE_PRICE_GROUP
+    expect(planForPrice(GROUP_PRICE)).toBeNull()
   })
 
   it('does not match when the price is unconfigured', () => {

@@ -19,14 +19,26 @@ import type { Plan } from '@/lib/plans'
  * and live modes, and hardcoding one means the first real payment lands on a
  * workspace that silently stays on TRIAGE.
  *
- * Only PRACTICE is self-serve. GROUP and NETWORK are contracts with billing
- * companies — seats, volume, and connectors someone has to build — so they are
- * a conversation, and the existing ConnectionRequest lead path already carries
- * that ask.
+ * Only PRACTICE is sold through in-app checkout. GROUP is "Request a demo" on
+ * yeam.ai/pricing, so a Group customer is subscribed from the Stripe dashboard —
+ * and that subscription's events still arrive here. Without the mapping the
+ * webhook would read an unknown price and drop a paying Group customer to
+ * TRIAGE. NETWORK is priced per customer and has no fixed price to map.
+ *
+ * An unset variable never matches: comparing against `undefined` is how an
+ * unconfigured deployment would otherwise grant a plan for any unknown price.
  */
+const PRICED_PLANS: readonly (readonly [string, Plan])[] = [
+  ['STRIPE_PRICE_PRACTICE', 'PRACTICE'],
+  ['STRIPE_PRICE_GROUP', 'GROUP'],
+]
+
 export function planForPrice(priceId: string | null | undefined): Plan | null {
   if (!priceId) return null
-  if (priceId === process.env.STRIPE_PRICE_PRACTICE) return 'PRACTICE'
+  for (const [envVar, plan] of PRICED_PLANS) {
+    const configured = process.env[envVar]
+    if (configured && configured === priceId) return plan
+  }
   return null
 }
 
