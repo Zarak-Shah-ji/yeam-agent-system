@@ -1,7 +1,31 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useSyncExternalStore } from 'react'
 import { CheckCircle2, AlertCircle, X } from 'lucide-react'
+
+type Outcome = 'ok' | 'invalid'
+
+/**
+ * The outcome in the URL, read once per page load.
+ *
+ * Captured on first read rather than re-read each render, because the param is
+ * stripped as soon as it has been seen (below) — re-reading would make the toast
+ * vanish the moment it appeared. A verification link always arrives as a full
+ * page load (it is a server redirect), which starts this module fresh, so the
+ * capture never outlives the navigation it describes.
+ */
+let captured: { outcome: Outcome | null } | null = null
+
+function readOutcome(): Outcome | null {
+  if (!captured) {
+    const value = new URLSearchParams(window.location.search).get('verified')
+    captured = { outcome: value === 'ok' || value === 'invalid' ? value : null }
+  }
+  return captured.outcome
+}
+
+/** Nothing to subscribe to: the URL is read once, not watched. */
+const noSubscription = () => () => {}
 
 /**
  * The outcome of clicking a verification link.
@@ -12,32 +36,38 @@ import { CheckCircle2, AlertCircle, X } from 'lucide-react'
  * and no clue why. Same silent-failure shape, same fix — say what happened.
  *
  * Read from window rather than useSearchParams so this does not opt the
- * dashboard out of static rendering, matching the login page. The param is then
- * stripped with replaceState: it describes one navigation, and leaving it on
- * the URL means a refresh or a shared link re-announces a verification that
- * already happened.
+ * dashboard out of static rendering, matching the login page. It is read through
+ * useSyncExternalStore — null on the server and during hydration, the real value
+ * straight after — which is how React wants browser-only state read. The earlier
+ * version set state from an effect, which lint rightly refuses
+ * (react-hooks/set-state-in-effect) and which kept CI red.
+ *
+ * The param is then stripped with replaceState: it describes one navigation,
+ * and leaving it on the URL means a refresh or a shared link re-announces a
+ * verification that already happened.
  */
 export function VerifiedToast() {
-  const [state, setState] = useState<'ok' | 'invalid' | null>(null)
+  const outcome = useSyncExternalStore(noSubscription, readOutcome, () => null)
+  const [dismissed, setDismissed] = useState(false)
 
+  // Syncing an external system (the address bar), so no state is set here.
   useEffect(() => {
+    if (!outcome) return
     const url = new URL(window.location.href)
-    const value = url.searchParams.get('verified')
-    if (value !== 'ok' && value !== 'invalid') return
-
-    setState(value)
     url.searchParams.delete('verified')
     window.history.replaceState({}, '', url.pathname + url.search + url.hash)
-  }, [])
+  }, [outcome])
 
   // Success is transient — the banner disappearing is the durable signal, so
   // the toast only has to confirm why. A failure stays until dismissed, because
   // it is asking the reader to do something.
   useEffect(() => {
-    if (state !== 'ok') return
-    const t = setTimeout(() => setState(null), 6000)
+    if (outcome !== 'ok') return
+    const t = setTimeout(() => setDismissed(true), 6000)
     return () => clearTimeout(t)
-  }, [state])
+  }, [outcome])
+
+  const state = dismissed ? null : outcome
 
   if (!state) return null
 
@@ -66,7 +96,7 @@ export function VerifiedToast() {
 
       <button
         type="button"
-        onClick={() => setState(null)}
+        onClick={() => setDismissed(true)}
         aria-label="Dismiss"
         className={`shrink-0 rounded p-1 transition-colors ${
           ok ? 'text-emerald-600 hover:bg-emerald-100' : 'text-amber-600 hover:bg-amber-100'

@@ -30,3 +30,7 @@ build/
 
 # ...but the shipped sample uploads are fixtures the import tests read, so they ship.
 !samples/*.csv
+.screenshots/
+
+# Playwright MCP session artifacts (page snapshots, console logs)
+.playwright-mcp/

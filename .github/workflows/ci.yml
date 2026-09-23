@@ -14,13 +14,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: pnpm/action-setup@v3
-        with:
-          version: 9
+      # No version pin: action-setup reads `packageManager` from package.json, so
+      # CI runs the pnpm the lockfile was written with. It was pinned to 9 while
+      # the project moved to 10, and pnpm 9 rejects this repo's
+      # pnpm-workspace.yaml ("packages field missing or empty") — every run since
+      # 2026-09-14 died at install, so no check below ever ran.
+      - uses: pnpm/action-setup@v4
 
+      # Matches the Vercel project's runtime (nodeVersion 24.x).
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: pnpm
 
       - name: Install dependencies
