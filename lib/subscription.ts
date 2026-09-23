@@ -62,3 +62,51 @@ export function planFromSubscription(
   if (!isEntitling(status)) return 'TRIAGE'
   return planForPrice(priceId) ?? 'TRIAGE'
 }
+
+/**
+ * Whether an event about `incoming` may overwrite the workspace's billing state.
+ *
+ * The webhook re-reads each subscription live, so events about ONE subscription
+ * converge whatever order they arrive in. That does not hold across two
+ * subscriptions. A customer who cancels and resubscribes has an old, cancelled
+ * subscription and a new, paying one — and Stripe retries a failed delivery for
+ * days, so the old one's `deleted` can arrive after the new one's `created`.
+ * Applied blindly, it drops a paying customer to TRIAGE and rewinds the stored
+ * ids to a subscription that no longer exists. Reproduced in test mode.
+ *
+ * So a subscription other than the one on file may only write if it entitles:
+ * a new paid subscription supersedes the old, and a dead one that is not the
+ * current one has nothing to say about access.
+ */
+export function shouldApplySubscription(
+  current: { subscriptionId: string | null },
+  incoming: { subscriptionId: string; status: string | null | undefined },
+): boolean {
+  if (!current.subscriptionId) return true
+  if (current.subscriptionId === incoming.subscriptionId) return true
+  return isEntitling(incoming.status)
+}
+
+/**
+ * When a cancellation the customer already asked for will take effect, if any.
+ *
+ * Stripe has two ways to say it. The billing portal on API 2026-08-26 sets
+ * `cancel_at` and leaves `cancel_at_period_end` false — observed in test mode —
+ * while older integrations set the boolean and leave the date empty. Reading
+ * only one of them makes a pending cancellation invisible, which is exactly the
+ * report that prompted this: "I cancelled and nothing changed."
+ *
+ * Nothing is pending once the subscription no longer entitles: by then the
+ * cancellation has happened, and the plan already says so.
+ */
+export function scheduledCancellation(s: {
+  status: string | null | undefined
+  cancelAt: number | null | undefined
+  cancelAtPeriodEnd: boolean | null | undefined
+  periodEnd: Date | null
+}): Date | null {
+  if (!isEntitling(s.status)) return null
+  if (typeof s.cancelAt === 'number') return new Date(s.cancelAt * 1000)
+  if (s.cancelAtPeriodEnd && s.periodEnd) return s.periodEnd
+  return null
+}

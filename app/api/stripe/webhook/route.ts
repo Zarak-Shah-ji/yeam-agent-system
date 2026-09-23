@@ -2,7 +2,11 @@ import { NextResponse } from 'next/server'
 import type Stripe from 'stripe'
 import { prisma } from '@/lib/db'
 import { getStripe, STRIPE_AVAILABLE } from '@/lib/stripe'
-import { planFromSubscription } from '@/lib/subscription'
+import {
+  planFromSubscription,
+  scheduledCancellation,
+  shouldApplySubscription,
+} from '@/lib/subscription'
 
 export const runtime = 'nodejs'
 
@@ -91,6 +95,28 @@ async function applySubscription(subscriptionId: string): Promise<void> {
     return
   }
 
+  // A late event about a subscription that is no longer the one on file must
+  // not take access away from the one that is. See shouldApplySubscription.
+  const current = await prisma.organization.findUnique({
+    where: { id: orgId },
+    select: { stripeSubscriptionId: true },
+  })
+  if (
+    !shouldApplySubscription(
+      { subscriptionId: current?.stripeSubscriptionId ?? null },
+      { subscriptionId: subscription.id, status: subscription.status },
+    )
+  ) {
+    console.warn(
+      'stripe webhook: ignoring superseded subscription',
+      subscription.id,
+      subscription.status,
+      'current is',
+      current?.stripeSubscriptionId,
+    )
+    return
+  }
+
   const priceId = subscription.items?.data?.[0]?.price?.id ?? null
   const plan = planFromSubscription(subscription.status, priceId)
 
@@ -101,6 +127,12 @@ async function applySubscription(subscriptionId: string): Promise<void> {
       subscriptionStatus: subscription.status,
       stripeSubscriptionId: subscription.id,
       currentPeriodEnd: periodEnd(subscription),
+      subscriptionCancelAt: scheduledCancellation({
+        status: subscription.status,
+        cancelAt: subscription.cancel_at,
+        cancelAtPeriodEnd: subscription.cancel_at_period_end,
+        periodEnd: periodEnd(subscription),
+      }),
       ...(customerId ? { stripeCustomerId: customerId } : {}),
     },
   })

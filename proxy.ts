@@ -17,7 +17,12 @@ export default auth((req) => {
     pathname.startsWith('/api/appeals') ||
     pathname.startsWith('/api/public') ||
     pathname.startsWith('/api/auth') ||
-    pathname === '/api/healthz'
+    pathname === '/api/healthz' ||
+    // Stripe calls this with no session, ever. It authenticates itself: the
+    // handler verifies the signature before reading anything, so a session
+    // check here adds nothing and refuses every real event — which is what it
+    // did until this line existed. Exact path, not a prefix, on purpose.
+    pathname === '/api/stripe/webhook'
   ) {
     return NextResponse.next()
   }

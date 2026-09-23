@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest'
-import { isEntitling, planForPrice, planFromSubscription } from '@/lib/subscription'
+import { isEntitling, planForPrice, planFromSubscription, scheduledCancellation, shouldApplySubscription } from '@/lib/subscription'
 
 /**
  * What Stripe says, turned into what the customer may do.
@@ -64,5 +64,58 @@ describe('planFromSubscription', () => {
   it('does not grant anything for a price it does not recognise', () => {
     process.env.STRIPE_PRICE_PRACTICE = PRICE
     expect(planFromSubscription('active', 'price_unknown')).toBe('TRIAGE')
+  })
+})
+
+describe('shouldApplySubscription', () => {
+  const CURRENT = { subscriptionId: 'sub_new' }
+
+  it('applies the first subscription a workspace ever has', () => {
+    expect(shouldApplySubscription({ subscriptionId: null }, { subscriptionId: 'sub_new', status: 'active' })).toBe(true)
+  })
+
+  it('applies every change to the subscription on file, including its cancellation', () => {
+    expect(shouldApplySubscription(CURRENT, { subscriptionId: 'sub_new', status: 'past_due' })).toBe(true)
+    expect(shouldApplySubscription(CURRENT, { subscriptionId: 'sub_new', status: 'canceled' })).toBe(true)
+  })
+
+  /** The bug this exists for, as reproduced against Stripe test mode. */
+  it('ignores a late cancellation of an older subscription', () => {
+    expect(shouldApplySubscription(CURRENT, { subscriptionId: 'sub_old', status: 'canceled' })).toBe(false)
+    expect(shouldApplySubscription(CURRENT, { subscriptionId: 'sub_old', status: 'unpaid' })).toBe(false)
+  })
+
+  it('lets a new paying subscription supersede the one on file', () => {
+    expect(shouldApplySubscription({ subscriptionId: 'sub_old' }, { subscriptionId: 'sub_new', status: 'active' })).toBe(true)
+  })
+})
+
+describe('scheduledCancellation', () => {
+  const END = new Date('2026-10-23T18:10:15Z')
+  const AT = Math.floor(END.getTime() / 1000)
+
+  it('reads the date the billing portal sets', () => {
+    // The shape Stripe's portal produced in test mode: a date, and the boolean false.
+    expect(
+      scheduledCancellation({ status: 'active', cancelAt: AT, cancelAtPeriodEnd: false, periodEnd: END }),
+    ).toEqual(END)
+  })
+
+  it('reads the older period-end flag when no date is set', () => {
+    expect(
+      scheduledCancellation({ status: 'active', cancelAt: null, cancelAtPeriodEnd: true, periodEnd: END }),
+    ).toEqual(END)
+  })
+
+  it('reports nothing pending on a subscription that is simply renewing', () => {
+    expect(
+      scheduledCancellation({ status: 'active', cancelAt: null, cancelAtPeriodEnd: false, periodEnd: END }),
+    ).toBeNull()
+  })
+
+  it('reports nothing pending once the cancellation has happened', () => {
+    expect(
+      scheduledCancellation({ status: 'canceled', cancelAt: AT, cancelAtPeriodEnd: false, periodEnd: END }),
+    ).toBeNull()
   })
 })
