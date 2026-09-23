@@ -30,6 +30,14 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # Explicit, not left to @prisma/client's postinstall: with the pnpm store
+      # restored from cache, pnpm reuses the package without re-running that
+      # script, so the generated client is missing and tsc reports no
+      # PrismaClient export — which is how this failed on its second-ever run.
+      # `build` does the same for Vercel. Needs no database.
+      - name: Generate Prisma client
+        run: pnpm exec prisma generate
+
       - name: TypeScript
         run: pnpm exec tsc --noEmit
 
