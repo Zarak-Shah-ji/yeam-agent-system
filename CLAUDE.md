@@ -43,6 +43,10 @@ numbers in it, so it can only confirm wire shapes, never layout.
   it. Human state lives in `ClaimWork`, keyed on `claimNumber`, not a relation —
   it must outlive every re-import.
 - Corrected codes render **alongside** the imported ones, never over them.
+- **Every new table enables RLS in its own migration**
+  (`ALTER TABLE "x" ENABLE ROW LEVEL SECURITY;`). Supabase exposes every table
+  to its public anon key otherwise; the app is unaffected because it connects as
+  `postgres`, which bypasses RLS. `__tests__/row-level-security.test.ts` fails you.
 - Prisma `Decimal` never does arithmetic — convert at the boundary with
   `money()`.
 - Type tRPC outputs **explicitly**; `inferRouterOutputs` blows the TS
