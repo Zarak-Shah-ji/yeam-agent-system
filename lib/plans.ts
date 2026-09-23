@@ -111,6 +111,23 @@ export function draftAllowance(plan: string, used: number): Allowance {
  * Routers build the TRPCError themselves; this module is imported by client
  * components and must not pull @trpc/server into the browser bundle.
  */
+/**
+ * Whether this deployment lets an admin set the plan by hand, for testing.
+ *
+ * Off unless somebody turns it on. `next dev` cannot run on a production
+ * deployment, so treating development as enabled is safe and saves a step; a
+ * real deployment has to set PLAN_OVERRIDE=1 deliberately, and should unset it
+ * again afterwards.
+ *
+ * This exists because every paid path — the written review, the verdict, the
+ * denial allowance — is unreachable on TRIAGE, which makes the paywalled half
+ * of the product impossible to look at without paying for it. The alternative
+ * people reach for is a hardcoded bypass in the gate itself, which is far
+ * worse: it is invisible, it is easy to forget, and it never gets removed.
+ */
+export const PLAN_OVERRIDE_ENABLED =
+  process.env.PLAN_OVERRIDE === '1' || process.env.NODE_ENV !== 'production'
+
 export const UPGRADE_REQUIRED = 'UPGRADE_REQUIRED'
 
 /** Prefix a refusal so isUpgradeRequired() can find it on the other side. */

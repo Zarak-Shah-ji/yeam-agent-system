@@ -2,6 +2,7 @@
 
 import { useRef, useState } from 'react'
 import { Upload, ShieldCheck, Loader2, AlertTriangle, Check } from 'lucide-react'
+import { trpc } from '@/lib/trpc/client'
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 
@@ -116,6 +117,21 @@ export function ImportBox({
   // overruling them at that point — otherwise the control could never disagree.
   const [confirmedProfile, setConfirmedProfile] = useState(false)
 
+  /*
+    The clinics this file could be for.
+
+    Defaults to the workspace default rather than to whatever the switcher is
+    on. Those are different questions: the switcher says what the biller is
+    LOOKING at, and a file dropped while reviewing Oakwood is not thereby an
+    Oakwood file. Defaulting to the switcher would file a month of denials under
+    the wrong clinic with nothing on screen having claimed it would.
+  */
+  const practices = trpc.practices.list.useQuery()
+  const livePractices = (practices.data?.practices ?? []).filter(p => !p.archived)
+  const defaultPracticeId =
+    livePractices.find(p => p.isDefault)?.id ?? livePractices[0]?.id ?? null
+  const [practiceId, setPracticeId] = useState<string | null>(null)
+
   function reset() {
     setFile(null)
     setPreview(null)
@@ -170,6 +186,13 @@ export function ImportBox({
       // The guard on the other end is for a caller that never previewed at all.
       body.append('confirmProfile', 'true')
       if (Object.keys(overrides).length) body.append('mapping', JSON.stringify(overrides))
+      // Only when the customer had a choice to make. Absent, the commit route
+      // files it under the workspace default — which is the right answer for
+      // every workspace that has one practice or none.
+      const chosenPractice = practiceId ?? defaultPracticeId
+      if (chosenPractice && livePractices.length > 1) {
+        body.append('practiceId', chosenPractice)
+      }
 
       const res = await fetch('/api/imports/commit', { method: 'POST', body })
       const json = await res.json()
@@ -223,7 +246,40 @@ export function ImportBox({
               {preview.skipped > 0 && `, ${preview.skipped} skipped`}
             </p>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            {/*
+              Which clinic this file is for.
+
+              This is the ONE moment a practiceId is chosen — every row in the
+              file inherits it, and it follows them for the life of the
+              workspace. So it sits here, beside the file that is about to be
+              saved, and not in Settings where it would be a mode somebody set
+              last week and forgot.
+
+              Hidden entirely when there is nothing to choose between, which is
+              every workspace that has not opened the feature. Then the commit
+              route's default takes over and the import behaves as it always did.
+            */}
+            {livePractices.length > 1 && (
+              <>
+                <span className="text-xs text-gray-500">For</span>
+                <Select
+                  value={practiceId ?? defaultPracticeId ?? ''}
+                  onValueChange={setPracticeId}
+                >
+                  <SelectTrigger className="h-8 w-44" aria-label="Which practice this file is for">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {livePractices.map(p => (
+                      <SelectItem key={p.id} value={p.id}>
+                        {p.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </>
+            )}
             <span className="text-xs text-gray-500">Read as</span>
             <Select value={preview.profile} onValueChange={v => switchProfile(v as ImportProfile)}>
               <SelectTrigger className="h-8 w-52">

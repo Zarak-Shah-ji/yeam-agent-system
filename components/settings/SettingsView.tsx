@@ -8,14 +8,24 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { UpgradeButton } from '@/components/subscription/Upgrade'
+import { PLAN_LABEL } from '@/lib/plans'
+import { PracticesSection } from './PracticesSection'
 
 /**
  * The two things a workspace has to tell us before a letter is sendable.
  *
- * THE PRACTICE. Every drafted document ends in a signature block the model can
+ * THE PRACTICES. Every drafted document ends in a signature block the model can
  * only render as [PRACTICE NAME], because the workspace had nowhere to hold the
  * billing entity's own details. An NPI retyped on every appeal is exactly the
  * friction that sends a biller back to a Word template.
+ *
+ * There are now two levels of this, and the order on screen says which is
+ * which. A Practice holds one clinic's block and is what a filed row signs
+ * with; the workspace form beneath it is the FALLBACK, used by rows filed under
+ * no practice — which is every row in every workspace that has not opened the
+ * feature. Both are kept because dropping the workspace one would have taken
+ * the signature block off every letter drafted before practices existed. See
+ * lib/practices/identity.ts, which is the single function that picks.
  *
  * These are the provider's identifiers, not a patient's, so storing them does
  * not touch the de-identification promise. The patient's name and member ID are
@@ -81,10 +91,11 @@ function PracticeForm() {
 
   return (
     <div className="rounded-lg border border-gray-200 p-4">
-      <h2 className="font-semibold text-gray-900">Your practice</h2>
+      <h2 className="font-semibold text-gray-900">Workspace signature block</h2>
       <p className="mt-1 text-sm text-gray-500">
-        Merged into the signature block of every document Yeam drafts. None of this is patient
-        information — it identifies the billing provider.
+        Merged into the signature block of every document Yeam drafts for a row that is not
+        filed under a practice above. None of this is patient information — it identifies the
+        billing provider.
       </p>
 
       <div className="mt-4 grid gap-3 sm:grid-cols-2">
@@ -347,6 +358,12 @@ function PlanAndUsage() {
   const resets = u
     ? new Date(u.resetsAt).toLocaleDateString('en-US', { month: 'long', day: 'numeric' })
     : ''
+  // A cancellation already requested and not yet in effect. Stripe's portal
+  // cancels at the end of the paid period, so the plan stays paid until then and
+  // this is the only sign on the page that the cancel went through.
+  const endsOn = state.data?.cancelAt
+    ? new Date(state.data.cancelAt).toLocaleDateString('en-US', { month: 'long', day: 'numeric' })
+    : null
 
   return (
     <div className="rounded-lg border border-gray-200 p-4">
@@ -359,7 +376,10 @@ function PlanAndUsage() {
       <dl className="mt-4 grid gap-3 sm:grid-cols-3">
         <div>
           <dt className="text-xs font-medium text-gray-600">Plan</dt>
-          <dd className="mt-0.5 text-sm text-gray-900">{state.data?.planLabel ?? 'Triage'}</dd>
+          <dd className="mt-0.5 text-sm text-gray-900">
+            {state.data?.planLabel ?? 'Triage'}
+            {endsOn ? <span className="text-gray-500"> · ends {endsOn}</span> : null}
+          </dd>
         </div>
         <div>
           <dt className="text-xs font-medium text-gray-600">Worked this month</dt>
@@ -376,6 +396,15 @@ function PlanAndUsage() {
           </dd>
         </div>
       </dl>
+
+      {endsOn ? (
+        <div className="mt-4 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+          <span className="font-semibold">Cancelled — ends {endsOn}.</span> You keep{' '}
+          {state.data?.planLabel} until then. After that the workspace moves to Triage, with every
+          row, number and letter left in place. Changed your mind? Open Manage billing and choose
+          Renew.
+        </div>
+      ) : null}
 
       <div className="mt-4 flex flex-wrap items-center gap-2">
         {state.data?.plan === 'TRIAGE' ? <UpgradeButton>Upgrade to Practice</UpgradeButton> : null}
@@ -396,6 +425,66 @@ function PlanAndUsage() {
           {portal.error.message}
         </p>
       ) : null}
+
+      {state.data?.canSetPlanForTesting ? <PlanForTesting current={state.data.plan} /> : null}
+    </div>
+  )
+}
+
+/**
+ * Stand on the other side of the paywall, without paying.
+ *
+ * Only rendered when the server says both halves of the gate are open — the
+ * deployment has PLAN_OVERRIDE on and this account is an ADMIN. The server
+ * checks both again on the write; this is the affordance, not the enforcement.
+ *
+ * Visually separated and plainly labelled on purpose. A control that silently
+ * changes what a customer is entitled to should never be mistakable for part of
+ * the product, so it says what it is and says that Stripe knows nothing about it.
+ */
+function PlanForTesting({ current }: { current: string }) {
+  const utils = trpc.useUtils()
+  const setPlan = trpc.subscription.setPlanForTesting.useMutation({
+    onSuccess: () => {
+      // Everything downstream of a plan: the paywalled panels, the allowance,
+      // the upgrade prompts. Invalidate broadly rather than guess.
+      void utils.invalidate()
+    },
+  })
+
+  const PLANS = ['TRIAGE', 'PRACTICE', 'GROUP', 'NETWORK'] as const
+
+  return (
+    <div className="mt-4 rounded-md border border-dashed border-amber-300 bg-amber-50/60 p-3">
+      <p className="text-xs font-semibold uppercase tracking-wide text-amber-900">
+        Testing only — not a purchase
+      </p>
+      <p className="mt-1 text-xs text-amber-900">
+        Switch this workspace between plans to see what each one unlocks. This writes the
+        entitlement directly and tells Stripe nothing, so billing is untouched and a real
+        subscription event will overwrite whatever you set here.
+      </p>
+
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        {PLANS.map(plan => (
+          <Button
+            key={plan}
+            size="sm"
+            variant={current === plan ? 'default' : 'outline'}
+            disabled={setPlan.isPending || current === plan}
+            onClick={() => setPlan.mutate({ plan })}
+          >
+            {PLAN_LABEL[plan]}
+          </Button>
+        ))}
+        {setPlan.isPending ? <span className="text-xs text-amber-900">Switching…</span> : null}
+      </div>
+
+      {setPlan.error ? (
+        <p className="mt-2 text-xs text-red-600" role="alert">
+          {setPlan.error.message}
+        </p>
+      ) : null}
     </div>
   )
 }
@@ -404,6 +493,9 @@ export function SettingsView() {
   return (
     <div className="space-y-4">
       <PlanAndUsage />
+      {/* Practices first: it is the one that decides what the form under it is
+          even for. */}
+      <PracticesSection />
       <PracticeForm />
       <PayerDestinations />
     </div>

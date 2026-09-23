@@ -26,6 +26,7 @@ import {
   type ClaimRow,
 } from '@/lib/denials/triage'
 import { PROCEDURES } from '@/lib/billing/procedure-codes'
+import { payerOf, UNKNOWN_PAYER } from '@/lib/billing/payer-key'
 import type { ClaimStatus } from '@/lib/imports/claims-profile'
 
 /* ----------------------------------------------------------------- facts --- */
@@ -50,8 +51,6 @@ export type ClaimFact = {
 
 export type DenialFact = ClaimRow & { status: string }
 
-const UNKNOWN_PAYER = 'Unknown payer'
-
 /**
  * One canonical spelling per reason code, for grouping.
  *
@@ -65,10 +64,8 @@ export function canonicalCarc(raw: string): string {
   return group ? `${group}-${code}` : code
 }
 
-export function payerOf(value: string | null | undefined): string {
-  const name = (value ?? '').trim()
-  return name || UNKNOWN_PAYER
-}
+/** Re-exported from the payer-name module; see lib/billing/payer-key.ts. */
+export { payerOf, UNKNOWN_PAYER }
 
 /** The date a claim's clock starts: when the service happened, else when it was filed. */
 export function anchorDate(claim: ClaimFact): Date | null {
@@ -119,7 +116,28 @@ function rate(numerator: number, denominator: number): number | null {
 export const AGING_BUCKETS = ['0-30', '31-60', '61-90', '91-120', '120+'] as const
 export type AgingBucket = (typeof AGING_BUCKETS)[number]
 
-export type AgingRow = { bucket: AgingBucket; amount: number; count: number }
+export type AgingRow = {
+  bucket: AgingBucket
+  amount: number
+  count: number
+  /**
+   * How old the claims in this bucket actually are, in days.
+   *
+   * The band is a range; these are the answer to "how old is this money
+   * really". A reader looking at 120+ needs to know whether that is mostly
+   * four-month-old claims or a pile from last year, and the band cannot say.
+   *
+   * Null on an empty bucket rather than 0: an average of nothing is not zero
+   * days, and "0d" reads as "these are brand new" instead of "there are none".
+   *
+   * Averaged per claim, not weighted by dollars. A dollar-weighted age is a
+   * different and equally defensible metric, but the two disagree whenever one
+   * large old claim sits among many small fresh ones — so this picks one, and
+   * the column is labelled as an average age rather than as "the" age.
+   */
+  avgDays: number | null
+  oldestDays: number | null
+}
 
 /**
  * Exported so a single claim can be aged the same way the chart ages the pile.
@@ -181,8 +199,15 @@ export function arAging(
   today: Date,
 ): { buckets: AgingRow[]; total: number; undated: { amount: number; count: number } } {
   const buckets = new Map<AgingBucket, AgingRow>(
-    AGING_BUCKETS.map(b => [b, { bucket: b, amount: 0, count: 0 }]),
+    AGING_BUCKETS.map(b => [
+      b,
+      { bucket: b, amount: 0, count: 0, avgDays: null, oldestDays: null },
+    ]),
   )
+  // Age totals live beside the rows rather than on them: a running sum is not a
+  // figure anyone should be able to read off the result, and keeping it out of
+  // AgingRow means the type describes only what it promises.
+  const ageSum = new Map<AgingBucket, number>(AGING_BUCKETS.map(b => [b, 0]))
   const undated = { amount: 0, count: 0 }
   let total = 0
 
@@ -197,12 +222,21 @@ export function arAging(
       undated.count += 1
       continue
     }
-    const row = buckets.get(bucketFor(daysBetween(anchor, today)))!
+    const age = daysBetween(anchor, today)
+    const bucket = bucketFor(age)
+    const row = buckets.get(bucket)!
     row.amount += amount
     row.count += 1
+    ageSum.set(bucket, ageSum.get(bucket)! + age)
+    // A future-dated service date ages negative and lands in 0-30; the oldest
+    // of a bucket is still the largest age in it, so max is taken plainly.
+    row.oldestDays = row.oldestDays === null ? age : Math.max(row.oldestDays, age)
   }
 
-  for (const row of buckets.values()) row.amount = round2(row.amount)
+  for (const row of buckets.values()) {
+    row.amount = round2(row.amount)
+    row.avgDays = row.count > 0 ? Math.round(ageSum.get(row.bucket)! / row.count) : null
+  }
   undated.amount = round2(undated.amount)
 
   return { buckets: [...buckets.values()], total: round2(total), undated }
@@ -300,12 +334,42 @@ export type PayerRow = {
   /** Median is deliberate — one 300-day outlier should not move this. */
   medianDaysToPay: number | null
   topCarc: { carc: string; label: string; count: number } | null
+  /**
+   * Every reason this payer denies on, most frequent first. `topCarc` is the
+   * head of this list.
+   *
+   * The table has room for one reason and the detail view has room for all of
+   * them, and "Aetna: CO-97 x14" is a different finding from "Aetna: CO-97 x14,
+   * CO-16 x11, CO-50 x9" — the first looks like one bad habit, the second like
+   * a payer that argues about everything.
+   */
+  reasons: PayerReason[]
   filingWindowDays: number
   filingWindowSource: 'payer' | 'default'
   /** From the worklist, not the snapshot: still recoverable, still in window. */
   atStake: number
   openDenials: number
+  /**
+   * The part of `atStake` whose filing window closes within
+   * EXPIRING_SOON_DAYS. A subset of at-stake, never added to it.
+   *
+   * At-stake alone cannot be triaged: $40k with three months to run and $40k
+   * with nine days to run are the same number and completely different
+   * mornings. This is the half that decides which payer gets worked today.
+   */
+  expiringSoon: number
+  /**
+   * Open rows whose window has already closed, and what they were worth.
+   *
+   * Excluded from at-stake by triage — expired money is not recoverable — but
+   * reported anyway, because a payer quietly running rows past their deadline
+   * is the most expensive thing on this page and the one nothing else shows.
+   */
+  expired: number
+  expiredBilled: number
 }
+
+export type PayerReason = { carc: string; label: string; count: number; billed: number }
 
 function median(values: number[]): number | null {
   if (values.length === 0) return null
@@ -386,9 +450,12 @@ export function payerScorecard(
     outstanding: number
     denied: number
     daysToPay: number[]
-    carcs: Map<string, number>
+    carcs: Map<string, { count: number; billed: number }>
     atStake: number
     openDenials: number
+    expiringSoon: number
+    expired: number
+    expiredBilled: number
   }
   const byPayer = new Map<string, Acc>()
 
@@ -407,6 +474,9 @@ export function payerScorecard(
         carcs: new Map(),
         atStake: 0,
         openDenials: 0,
+        expiringSoon: 0,
+        expired: 0,
+        expiredBilled: 0,
       }
       byPayer.set(name, acc)
     }
@@ -431,15 +501,42 @@ export function payerScorecard(
   for (const denial of open) {
     const acc = accFor(payerOf(denial.payer))
     const triaged = triageRow(denial, today)
-    if (triaged.actionable) acc.atStake += denial.billed
+    if (triaged.actionable) {
+      acc.atStake += denial.billed
+      // Only actionable rows can expire soon — an expired row has already
+      // expired, and a row with no denial date has no clock to run out.
+      if (triaged.daysLeft !== null && triaged.daysLeft <= EXPIRING_SOON_DAYS) {
+        acc.expiringSoon += denial.billed
+      }
+    }
+    if (triaged.expired) {
+      acc.expired += 1
+      acc.expiredBilled += denial.billed
+    }
     acc.openDenials += 1
     const key = canonicalCarc(triaged.carc)
-    if (key !== 'UNKNOWN') acc.carcs.set(key, (acc.carcs.get(key) ?? 0) + 1)
+    if (key !== 'UNKNOWN') {
+      const seen = acc.carcs.get(key) ?? { count: 0, billed: 0 }
+      seen.count += 1
+      seen.billed += denial.billed
+      acc.carcs.set(key, seen)
+    }
   }
 
   return [...byPayer.values()]
     .map(acc => {
-      const top = [...acc.carcs.entries()].sort((a, b) => b[1] - a[1])[0]
+      // By count, tie-broken by money: "what does this payer argue about" is a
+      // question about frequency, and two reasons seen once each should be
+      // ordered by which one costs more.
+      const reasons: PayerReason[] = [...acc.carcs.entries()]
+        .map(([carc, seen]) => ({
+          carc,
+          label: lookupCarc(carc)?.label ?? 'Unrecognised reason code',
+          count: seen.count,
+          billed: round2(seen.billed),
+        }))
+        .sort((a, b) => b.count - a.count || b.billed - a.billed)
+      const top = reasons[0]
       const window = filingWindow(acc.payer === UNKNOWN_PAYER ? undefined : acc.payer)
       return {
         payer: acc.payer,
@@ -453,13 +550,15 @@ export function payerScorecard(
         grossCollectionRate: rate(acc.paid, acc.billed),
         netCollectionRate: rate(acc.paid, acc.allowed),
         medianDaysToPay: median(acc.daysToPay),
-        topCarc: top
-          ? { carc: top[0], label: lookupCarc(top[0])?.label ?? 'Unrecognised reason code', count: top[1] }
-          : null,
+        topCarc: top ? { carc: top.carc, label: top.label, count: top.count } : null,
+        reasons,
         filingWindowDays: window.days,
         filingWindowSource: window.source,
         atStake: round2(acc.atStake),
         openDenials: acc.openDenials,
+        expiringSoon: round2(acc.expiringSoon),
+        expired: acc.expired,
+        expiredBilled: round2(acc.expiredBilled),
       }
     })
     .sort((a, b) => b.billed - a.billed || b.atStake - a.atStake)
@@ -470,6 +569,15 @@ export function payerScorecard(
 export type CarcRow = {
   carc: string
   label: string
+  /**
+   * What to actually do about this code.
+   *
+   * triageRow() has always computed this and the worklist has always shown it;
+   * Analytics used to drop it on the floor and render the label alone, which
+   * tells a biller what the payer said but not what to do next. That is the
+   * half worth reading.
+   */
+  note: string
   remedy: string
   remedyLabel: string
   count: number
@@ -489,6 +597,7 @@ export function topCarcs(denials: DenialFact[], today: Date, limit = 10): CarcRo
       {
         carc: key,
         label: triaged.carcLabel,
+        note: triaged.note,
         remedy: triaged.remedy,
         remedyLabel: triaged.remedyLabel,
         count: 0,

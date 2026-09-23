@@ -14,7 +14,7 @@ type SSEEvent =
   | { type: 'tool_call'; tool: string; args: Record<string, unknown> }
   | { type: 'tool_result'; step: TraceStep }
   | { type: 'text'; content: string }
-  | { type: 'done'; agentName: string }
+  | { type: 'done'; agentName: string; refused?: boolean }
   | { type: 'error'; message: string }
 
 export interface Message {
@@ -185,8 +185,17 @@ export function ChatProvider({ children }: { children: ReactNode }) {
               break
 
             case 'done':
+              // `refused` keeps the model's own words on screen — unlike the
+              // error case below, which replaces them — and only flips the flag
+              // that renders Retry. A declined answer is still worth reading;
+              // what it was missing was a way to ask again.
               updateLastAssistantMessage(m => ({
-                ...m, isStreaming: false, agentName: event.agentName, status: null, pending: null,
+                ...m,
+                isStreaming: false,
+                agentName: event.agentName,
+                status: null,
+                pending: null,
+                isError: m.isError || Boolean(event.refused),
               }))
               break
 

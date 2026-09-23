@@ -383,6 +383,24 @@ export type CallGuidance = {
   verdict: CallVerdict
   label: string
   detail: string
+  /**
+   * When the payer is expected to have answered, or null when there is nothing
+   * to measure from.
+   *
+   * The same arithmetic the verdict already does, published as a date so the
+   * stage bar can print one. It is deliberately returned from here rather than
+   * recomputed in the UI: two places deciding independently when a payer is late
+   * is how a banner and a badge end up disagreeing about the same claim. The
+   * fallback cases carry a date too, labelled as a rule of thumb in `detail`.
+   */
+  expectedBy: Date | null
+}
+
+/** A date `days` after `from`, at the same time of day. */
+function addDays(from: Date, days: number): Date {
+  const out = new Date(from)
+  out.setDate(out.getDate() + days)
+  return out
 }
 
 export function callGuidance(
@@ -400,6 +418,7 @@ export function callGuidance(
       verdict: 'not-sent',
       label: '—',
       detail: 'Nothing sent yet, so there is nothing to chase.',
+      expectedBy: null,
     }
   }
 
@@ -408,6 +427,7 @@ export function callGuidance(
       verdict: 'unknown',
       label: 'No send date',
       detail: 'Marked sent, but without a date to measure from.',
+      expectedBy: null,
     }
   }
 
@@ -420,11 +440,13 @@ export function callGuidance(
           verdict: 'due',
           label: `Waiting ${waiting}d`,
           detail: 'No A/R snapshot for this payer — using a 30-day rule of thumb.',
+          expectedBy: addDays(input.lastTouchedAt, 30),
         }
       : {
           verdict: 'in-process',
           label: `Waiting ${waiting}d`,
           detail: 'Import an A/R export to learn this payer\'s actual turnaround.',
+          expectedBy: addDays(input.lastTouchedAt, 30),
         }
   }
 
@@ -435,6 +457,7 @@ export function callGuidance(
       verdict: 'in-process',
       label: `Don't call yet`,
       detail: `Sent ${waiting}d ago. This payer's median is ${median}d — it is still in process.`,
+      expectedBy: addDays(input.lastTouchedAt, median),
     }
   }
   if (waiting < median * 1.5) {
@@ -442,11 +465,13 @@ export function callGuidance(
       verdict: 'due',
       label: 'Due a chase',
       detail: `Sent ${waiting}d ago, past this payer's ${median}d median.`,
+      expectedBy: addDays(input.lastTouchedAt, median),
     }
   }
   return {
     verdict: 'overdue',
     label: 'Overdue',
     detail: `Sent ${waiting}d ago — ${Math.round(waiting / median)}× this payer's ${median}d median.`,
+    expectedBy: addDays(input.lastTouchedAt, median),
   }
 }

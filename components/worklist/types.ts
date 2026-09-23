@@ -1,3 +1,4 @@
+import type { CallVerdict } from '@/lib/denials/score'
 import type { RefinementView, ScoreFactorView } from './RowDetail'
 
 /**
@@ -19,6 +20,9 @@ export type WorklistRow = {
   status: string
   userNote: string | null
   draftCount: number
+  /** Which clinic. Both null in a workspace that has never created a practice. */
+  practiceId: string | null
+  practiceName: string | null
 
   claimNumber?: string
   payer?: string
@@ -41,6 +45,8 @@ export type WorklistRow = {
   denialDate: Date | string | null
   lastTouchedAt: Date | string | null
   followUpAt: Date | string | null
+  /** The later of lastTouchedAt and reconciledAt — what the digest compares. */
+  changedAt: Date | string | null
 
   refinement: RefinementView | null
 
@@ -48,5 +54,12 @@ export type WorklistRow = {
   band: string
   factors: ScoreFactorView[]
 
-  call: { verdict: string; label: string; detail: string }
+  /*
+    The verdict is the union rather than a bare string: it is a four-member type
+    alias with no Prisma in it, so importing it costs nothing against the
+    instantiation limit this file exists to dodge, and lib/denials/stages.ts
+    switches on it. A widened string here would have pushed that cast into the
+    component.
+  */
+  call: { verdict: CallVerdict; label: string; detail: string; expectedBy: Date | string | null }
 }

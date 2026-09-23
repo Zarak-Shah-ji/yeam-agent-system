@@ -1,13 +1,16 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-import { Check, Info, Loader2, PhoneOff, RotateCcw, Search, Send } from 'lucide-react'
+import { Check, ChevronDown, History, Info, Loader2, PhoneOff, RotateCcw, Search, Sparkles } from 'lucide-react'
 import { trpc } from '@/lib/trpc/client'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
-import { OutcomePanel } from './OutcomePanel'
+import { BAND_LABEL, type PriorityBand } from '@/lib/denials/score'
+import { STATUS_LABEL } from '@/lib/denials/status'
+import { Timeline } from '@/components/shared/Timeline'
+import { NoteComposer } from './NoteComposer'
 
 /**
  * Everything about one denial that is not the draft itself.
@@ -22,11 +25,11 @@ import { OutcomePanel } from './OutcomePanel'
  *  3. THE LOOP. Status, follow-up date and a free-text note. Until these
  *     existed no row could leave DRAFTED, so nothing in the product could say
  *     what any of the work was worth.
- *  4. WHAT CAME BACK. Every submission with its own ruling, recorded against
- *     the attempt rather than the row so a first-level appeal that lost and a
- *     second-level one that won both survive. This is the only data in the
- *     product that no export could rebuild — see components/worklist/
- *     OutcomePanel.tsx.
+ *
+ * WHAT CAME BACK used to be the fourth, and is now its own pane at the end of
+ * the panel — components/worklist/OutcomeList.tsx. It was rendered here while
+ * being the last thing that happens to a claim, which meant scrolling back up
+ * past the letter to close the loop on it.
  */
 
 const STATUS_ACTIONS = [
@@ -34,14 +37,6 @@ const STATUS_ACTIONS = [
   { status: 'PAID' as const, label: 'Mark paid', hint: 'Money arrived' },
   { status: 'DEAD' as const, label: 'Write off', hint: 'Not worth pursuing further' },
 ]
-
-const STATUS_LABEL: Record<string, string> = {
-  TO_WORK: 'To work',
-  DRAFTED: 'Drafted',
-  SENT: 'Sent',
-  PAID: 'Recovered',
-  DEAD: 'Written off',
-}
 
 const STATUS_VARIANT: Record<string, 'secondary' | 'warning' | 'info' | 'success' | 'outline'> = {
   TO_WORK: 'secondary',
@@ -117,6 +112,81 @@ function toDateInput(value: Date | string | null): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
 }
 
+/** One row of history, as the server hands it over. */
+type HistoryEvent = {
+  id: string
+  kind: string
+  detail: string | null
+  at: Date | string
+  actor: string | null
+}
+
+/** "12 Sep", or "12 Sep 2025" once it is not this year. */
+function shortDate(value: Date | string): string {
+  const d = typeof value === 'string' ? new Date(value) : value
+  if (Number.isNaN(d.getTime())) return ''
+  const sameYear = d.getFullYear() === new Date().getFullYear()
+  return d.toLocaleDateString(undefined, {
+    day: 'numeric',
+    month: 'short',
+    ...(sameYear ? {} : { year: 'numeric' }),
+  })
+}
+
+function byline(event: HistoryEvent): string {
+  return event.actor ? `${shortDate(event.at)} by ${event.actor}` : shortDate(event.at)
+}
+
+/**
+ * The notes written on this row before the one in the box.
+ *
+ * The current note is excluded rather than repeated: it is already on screen,
+ * three inches up, in an editable field. Showing it twice invites someone to
+ * wonder which of the two is real.
+ *
+ * Empty details are dropped. Clearing a note is a real event and it is in the
+ * timeline, but "someone deleted the note on 12 Sep" is not what this list is
+ * for — this is for reading what the payer said last time.
+ */
+function PriorNotes({ events, current }: { events: HistoryEvent[]; current: string | null }) {
+  const notes = events.filter(e => e.kind === 'NOTE_ADDED' && e.detail?.trim())
+  // The newest NOTE_ADDED is what the column already holds, so skip it — but
+  // only when it really matches, since a note saved by an older build of this
+  // product has no event behind it at all.
+  const prior =
+    notes.length && notes[0].detail?.trim() === (current ?? '').trim() ? notes.slice(1) : notes
+
+  if (prior.length === 0) return null
+
+  return (
+    <details className="mt-2 group">
+      <summary className="cursor-pointer text-xs text-gray-500 hover:text-gray-700">
+        {prior.length} earlier {prior.length === 1 ? 'note' : 'notes'}
+      </summary>
+      <ul className="mt-2 space-y-2 border-l-2 border-gray-200 pl-3">
+        {prior.map(e => (
+          <li key={e.id} className="text-sm">
+            <p className="whitespace-pre-wrap text-gray-700">{e.detail}</p>
+            <p className="mt-0.5 text-xs text-gray-400">{byline(e)}</p>
+          </li>
+        ))}
+      </ul>
+    </details>
+  )
+}
+
+/** Who last set the follow-up date, and when. Silent when nobody has. */
+function FollowUpOrigin({ events }: { events: HistoryEvent[] }) {
+  const last = events.find(e => e.kind === 'FOLLOW_UP_SET')
+  if (!last) return null
+  return (
+    <p className="mt-1 text-xs text-gray-400">
+      {last.detail === 'cleared' ? 'Cleared ' : 'Set '}
+      {byline(last)}
+    </p>
+  )
+}
+
 export function RowDetail({
   rowId,
   status,
@@ -131,6 +201,8 @@ export function RowDetail({
   onPendingChange,
 }: RowDetailProps) {
   const [draftNote, setDraftNote] = useState(note ?? '')
+  /** Whether the "write it for me" composer is open on this row. */
+  const [composing, setComposing] = useState(false)
   const [followUp, setFollowUp] = useState(toDateInput(followUpAt))
   const [shownRow, setShownRow] = useState(rowId)
 
@@ -176,14 +248,27 @@ export function RowDetail({
   const setNote = trpc.worklist.setNote.useMutation({ onSuccess: refresh })
   const saveFollowUp = trpc.worklist.setFollowUp.useMutation({ onSuccess: refresh })
 
-  // Every attempt at getting a document to this payer, newest first. Reads as
-  // the row's history: what went out, when, and under what reference.
-  const submissions = trpc.worklist.submissions.useQuery({ rowId })
+  // Every note ever written on this row, and every date ever set. The columns
+  // above hold only the current values, so without this a biller reopening a
+  // claim sees the last thing they typed and no sign of the three calls before it.
+  const history = trpc.worklist.history.useQuery({ rowId })
+
+  /*
+    The same events merged with the import, the drafts and the submissions.
+
+    Collapsed by default, and that is the whole design of it. The full record
+    answers a question asked once per claim — "how many times have we been round
+    this already" — and printing it open would put fifteen lines of past between
+    the biller and the note field they came here to type in. The count is in the
+    header so the question can be answered without opening anything.
+  */
+  const timeline = trpc.worklist.timeline.useQuery({ rowId })
+  const [historyOpen, setHistoryOpen] = useState(false)
 
   const busy = setStatus.isPending || setNote.isPending || saveFollowUp.isPending
   const noteChanged = draftNote.trim() !== (note ?? '').trim()
   const followUpChanged = followUp !== toDateInput(followUpAt)
-  const sent = submissions.data ?? []
+  const followUps = timeline.data?.followUps ?? 0
 
   return (
     <div className="space-y-4">
@@ -217,9 +302,17 @@ export function RowDetail({
       {/* Why the queue put this row where it did. */}
       <div className="rounded-md border border-gray-200 p-3">
         <div className="flex items-center justify-between">
+          {/*
+            The band leads here too, matching the table. "Why this is Work now"
+            is a question a biller has; "why this ranks 72" is one they only have
+            because we showed them a 72.
+          */}
           <p className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-gray-500">
             <Info className="h-3.5 w-3.5" aria-hidden="true" />
-            Why this ranks {score}
+            Why this is {BAND_LABEL[band as PriorityBand] ?? 'ranked here'}
+            <span className="normal-case tracking-normal text-gray-400">
+              · {score} of 100
+            </span>
           </p>
           <Badge variant={status === 'PAID' ? 'success' : 'secondary'}>
             {STATUS_LABEL[status] ?? status}
@@ -262,9 +355,45 @@ export function RowDetail({
 
       {/* The note. Where the reason the payer gave on the phone actually lands. */}
       <div>
-        <label htmlFor="row-note" className="text-xs font-medium uppercase tracking-wide text-gray-500">
-          Note
-        </label>
+        <div className="flex items-center justify-between gap-2">
+          <label
+            htmlFor="row-note"
+            className="text-xs font-medium uppercase tracking-wide text-gray-500"
+          >
+            Note
+          </label>
+          {/*
+            Offered beside the label rather than under the box, because the
+            decision it changes — write this myself or say it — is taken before
+            anyone starts typing, not after.
+          */}
+          {!composing && (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => setComposing(true)}
+              className="flex items-center gap-1 rounded-full border border-blue-200 bg-blue-50 px-2.5 py-1 text-xs font-medium text-blue-800 hover:bg-blue-100 disabled:opacity-50"
+            >
+              <Sparkles className="h-3 w-3" aria-hidden="true" />
+              Write with AI
+            </button>
+          )}
+        </div>
+
+        {composing && (
+          <NoteComposer
+            rowId={rowId}
+            busy={busy}
+            onClose={() => setComposing(false)}
+            /*
+              Fills the box; does not save. The model is never what stamps this
+              row as touched — a machine writing lastTouchedAt distorts the
+              staleness term in the priority score, and therefore the queue.
+            */
+            onAccept={setDraftNote}
+          />
+        )}
+
         <Textarea
           id="row-note"
           rows={2}
@@ -290,6 +419,7 @@ export function RowDetail({
             Save note
           </Button>
         )}
+        <PriorNotes events={history.data ?? []} current={note} />
       </div>
 
       {/* Closing the loop. */}
@@ -310,6 +440,13 @@ export function RowDetail({
               onChange={e => setFollowUp(e.target.value)}
               className="mt-1 w-40"
             />
+            {/*
+              Where this date came from. Recording a submission sets one
+              automatically, so a biller could open a row and find a date nobody
+              remembered choosing — and no way to tell that from one they had set
+              themselves and forgotten.
+            */}
+            <FollowUpOrigin events={history.data ?? []} />
           </div>
           {/*
             Saving a date on its own. Until this existed the only way to record
@@ -384,32 +521,47 @@ export function RowDetail({
       </div>
 
       {/*
-        What has actually gone to the payer, the proof of it, and what came
-        back. The last part is the one the product was missing: a submission
-        with no outcome records that a letter went out, which is not the fact
-        anyone needed. Each attempt keeps its own ruling — a first-level appeal
-        that lost and a second-level one that won are both true.
+        The whole record, from the import that carried this claim in to the last
+        thing anyone did to it. Built by lib/claims/timeline.ts and rendered by
+        the same component /claims uses, so a biller who looks a claim up on one
+        page and opens it on the other is reading one history, not two.
       */}
-      {sent.length > 0 && (
-        <div className="border-t border-gray-200 pt-3">
-          <p className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-gray-500">
-            <Send className="h-3.5 w-3.5" aria-hidden="true" />
-            Submitted
-          </p>
-          <ul className="mt-2 space-y-2">
-            {sent.map(s => (
-              <OutcomePanel
-                key={s.id}
-                submission={s}
-                onRecorded={() => {
-                  void submissions.refetch()
-                  refresh()
-                }}
-              />
-            ))}
-          </ul>
-        </div>
-      )}
+      <div className="border-t border-gray-200 pt-3">
+        <button
+          type="button"
+          onClick={() => setHistoryOpen(v => !v)}
+          aria-expanded={historyOpen}
+          className="flex w-full items-center justify-between gap-2 text-left"
+        >
+          <span className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-gray-500">
+            <History className="h-3.5 w-3.5" aria-hidden="true" />
+            Everything that has happened
+            {followUps > 0 && (
+              <span className="normal-case tracking-normal text-gray-400">
+                · {followUps} sent to the payer
+              </span>
+            )}
+          </span>
+          <ChevronDown
+            className={`h-3.5 w-3.5 shrink-0 text-gray-500 transition-transform ${
+              historyOpen ? 'rotate-180' : ''
+            }`}
+            aria-hidden="true"
+          />
+        </button>
+        {historyOpen && (
+          <div className="mt-2">
+            <Timeline
+              entries={timeline.data?.entries ?? []}
+              empty={
+                timeline.isLoading
+                  ? 'Loading…'
+                  : 'Nothing has happened to this claim since it was imported.'
+              }
+            />
+          </div>
+        )}
+      </div>
 
       {(setStatus.error || setNote.error || saveFollowUp.error) && (
         <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700" role="alert">

@@ -21,6 +21,16 @@ export type ImportUpload = {
    * came from never showed.
    */
   confirmProfile: boolean
+  /**
+   * Which clinic this file is for, when the customer chose one.
+   *
+   * Carried as a plain string and NOT trusted here — the commit route checks it
+   * belongs to the caller's workspace before writing it, and falls back to the
+   * workspace default when it is absent or wrong. Reading it in this shared
+   * parser rather than in the route keeps preview and commit sending the same
+   * form.
+   */
+  practiceId?: string
 }
 
 export async function readImportUpload(
@@ -60,6 +70,8 @@ export async function readImportUpload(
     }
   }
 
+  const rawPractice = form.get('practiceId')
+
   return {
     upload: {
       buffer: Buffer.from(await file.arrayBuffer()),
@@ -67,6 +79,7 @@ export async function readImportUpload(
       profile,
       mappingOverride,
       confirmProfile: form.get('confirmProfile') === 'true',
+      practiceId: typeof rawPractice === 'string' && rawPractice.trim() ? rawPractice : undefined,
     },
   }
 }

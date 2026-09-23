@@ -52,6 +52,10 @@ enum UserRole {
   BILLING
 }
 
+// Billing tiers. `PRACTICE` here is a PRICE POINT, not the `Practice` model
+// further down — a one-clinic customer's plan. The two are unrelated and neither
+// reads the other; renaming either to "fix" the collision would break a
+// subscription or a signature block for no gain. See model Practice.
 enum OrgPlan {
   TRIAGE
   PRACTICE
@@ -145,6 +149,25 @@ enum OutcomeSource {
 // payer. IMPORTED is not written as a row — it is derived from the batch the
 // claim arrived on, because writing one per claim would mean 1,200 rows per
 // upload saying nothing that the batch does not already say.
+// What happened to a denial row. The claims-side ClaimEventKind is the model for
+// this; the two are deliberately separate enums because the two records go
+// through different lifecycles and a shared enum would carry values that are
+// impossible on one side.
+// Who wrote a version of a letter. The history is one linear list of versions
+// and both authors append to it, so the column is what tells "Yeam revised it"
+// apart from "the biller rewrote the third paragraph".
+enum DraftSource {
+  MODEL
+  BILLER
+}
+
+enum DenialEventKind {
+  STATUS_CHANGED
+  NOTE_ADDED
+  FOLLOW_UP_SET
+  REOPENED
+}
+
 enum ClaimEventKind {
   STATUS_CHANGED
   NOTE_ADDED
@@ -154,31 +177,66 @@ enum ClaimEventKind {
   SENT_TO_WORKLIST
 }
 
+// What somebody did with the product, as opposed to what happened to a claim.
+//
+// A closed enum and not a string, because the whole value of this table is that
+// it can be counted. One free-text name and the counts become a grep.
+//
+// Deliberately tiny. This exists to answer one question — when a biller opens a
+// claim, what do they actually do next — and a vocabulary that grows past the
+// question it was added for is how a telemetry table turns into a second,
+// worse copy of the record.
+enum UsageEventName {
+  // The claim detail dialog was opened. The denominator for everything else.
+  CLAIM_OPENED
+  // A collapsed part of it was expanded. `detail` says which.
+  CLAIM_SECTION_OPENED
+  // Somebody left for the drafter. `detail` says from where — the list row, or
+  // the dialog. That pair is the actual measurement: if almost every claim goes
+  // to the drafter, the dialog is a speed bump on the way there.
+  CLAIM_TO_DRAFTER
+}
+
 // ─── NextAuth Tables ─────────────────────────────────────────────────────────
 
 model User {
-  id            String        @id @default(cuid())
-  name          String?
-  email         String        @unique
-  emailVerified DateTime?
-  image         String?
-  passwordHash  String?
-  role          UserRole      @default(FRONT_DESK)
-  accounts      Account[]
-  sessions      Session[]
-  agentLogs     AgentLog[]
-  conversations AgentConversation[]
+  id               String               @id @default(cuid())
+  name             String?
+  email            String               @unique
+  emailVerified    DateTime?
+  image            String?
+  passwordHash     String?
+  role             UserRole             @default(FRONT_DESK)
+  accounts         Account[]
+  sessions         Session[]
+  agentLogs        AgentLog[]
+  conversations    AgentConversation[]
   // Nullable: the seeded demo accounts pre-date tenancy and have no org. Every
   // account created from here on gets one at signup. Queries that read customer
   // data must go through orgProcedure, which refuses a user without an org
   // rather than falling back to reading everything.
-  orgId         String?
-  org           Organization? @relation(fields: [orgId], references: [id])
+  orgId            String?
+  org              Organization?        @relation(fields: [orgId], references: [id])
   // The app had no way to answer "who logged in and when" — JWT sessions mean
   // the sessions table is never written. Stamped in the signIn callback.
-  lastLoginAt   DateTime?
-  createdAt     DateTime      @default(now())
-  updatedAt     DateTime      @updatedAt
+  lastLoginAt      DateTime?
+  // Which clinic this person is looking at, or null for all of them.
+  //
+  // User-writable, and therefore never trusted: practiceProcedure re-checks on
+  // every read that it still belongs to ctx.orgId, and falls back to combined
+  // mode when it does not. A stale id after an archive must widen the view, not
+  // throw — the alternative is a biller locked out of their own worklist by a
+  // setting they cannot see.
+  //
+  // NOT in the session token. lib/auth.ts uses JWT sessions with no database
+  // session table, so a practice in the token could not change without
+  // re-issuing it. orgProcedure already does one memoized user lookup per
+  // request; this rides along in that same select and costs nothing extra.
+  activePracticeId String?
+  activePractice   Practice?            @relation(fields: [activePracticeId], references: [id])
+  createdAt        DateTime             @default(now())
+  updatedAt        DateTime             @updatedAt
+  worklistPrefs    WorklistPreference[]
 
   @@index([orgId])
   @@map("users")
@@ -262,9 +320,9 @@ model AgentLog {
 // lib/imports/claims-profile.ts for the only fields that are ever read.
 
 model Organization {
-  id                 String              @id @default(cuid())
+  id                 String               @id @default(cuid())
   name               String
-  plan               OrgPlan             @default(TRIAGE)
+  plan               OrgPlan              @default(TRIAGE)
   users              User[]
   batches            ImportBatch[]
   rows               DenialRow[]
@@ -276,7 +334,11 @@ model Organization {
   payerDestinations  PayerDestination[]
   claimWork          ClaimWork[]
   claimEvents        ClaimEvent[]
+  denialEvents       DenialEvent[]
+  worklistPrefs      WorklistPreference[]
   conversations      AgentConversation[]
+  practices          Practice[]
+  usageEvents        UsageEvent[]
 
   // ─ The practice, as it appears on a letter ─────────────────────────────────
   //
@@ -288,6 +350,13 @@ model Organization {
   //
   // All nullable: a workspace is usable before anyone fills this in, and a
   // half-filled profile still beats retyping an NPI on every appeal.
+  //
+  // SINCE PRACTICES: these twelve are now the FALLBACK. A billing company runs
+  // several clinics and needs a signature block per clinic, which is what model
+  // Practice below holds. They were copied rather than moved so that no letter
+  // drafted before practices existed loses its signature block, and so a
+  // workspace that never creates a practice keeps working unchanged. Read
+  // through practiceIdentity() (lib/practices/identity.ts) — never directly.
   practiceName String?
   npi          String?
   tin          String?
@@ -315,11 +384,86 @@ model Organization {
   stripeSubscriptionId String?   @unique
   subscriptionStatus   String?
   currentPeriodEnd     DateTime?
+  // When a cancellation already requested will take effect. Stripe's portal
+  // cancels at the end of the paid period, so for weeks a workspace is both
+  // PRACTICE and cancelled — and without this the Settings card could only say
+  // "Practice", which read as though the cancel had not worked. A fact Stripe
+  // asserts, like currentPeriodEnd, not something derived; null when nothing is
+  // pending, including after the cancellation has actually happened.
+  subscriptionCancelAt DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@map("organizations")
+}
+
+// One clinic inside a billing company.
+//
+// The tenant boundary is still Organization, deliberately. A billing company is
+// the customer: one subscription, one allowance, one user roster, one Stripe
+// customer. Practices are a grouping INSIDE that — which means a forgotten
+// practice filter shows someone their own company's other clinic, a UX bug,
+// where a forgotten org filter would be a cross-customer leak. Those two
+// failures are not comparable, and that asymmetry is the whole reason this is a
+// child model rather than a multi-org membership table.
+//
+// NOT related to OrgPlan.PRACTICE, which is a billing tier. See the comment
+// there.
+//
+// The twelve identity columns are the same twelve on Organization. They were
+// copied, not moved: Organization stays a fallback for one release so nothing
+// drafted before this loses its signature block. See practiceIdentity().
+//
+// Holds no patient identifier, like every other table here — an NPI and a TIN
+// identify the provider, not a person. __tests__/no-phi-columns.test.ts asserts
+// it.
+model Practice {
+  id    String       @id @default(cuid())
+  orgId String
+  org   Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  // What the biller calls this clinic in the switcher. Distinct from
+  // practiceName, which is the legal name that goes on a letter — "Riverside"
+  // and "Riverside Family Medicine, PLLC" are both right in their own place.
+  name String
+
+  // ─ The practice, as it appears on a letter ─────────────────────────────────
+  practiceName String?
+  npi          String?
+  tin          String?
+  addressLine1 String?
+  addressLine2 String?
+  city         String?
+  state        String?
+  postalCode   String?
+  contactName  String?
+  contactPhone String?
+  contactFax   String?
+  contactEmail String?
+
+  // Where an import with no practice chosen lands, and what a new workspace's
+  // backfilled practice is. Not enforced unique in the database: two defaults
+  // is a settings bug that picks the older one, where a partial unique index
+  // would make the fix itself fail.
+  isDefault Boolean @default(false)
+
+  // Archived, never deleted. A clinic that leaves still has letters, outcomes
+  // and a year of denial history hanging off it; deleting the row would cascade
+  // them away. Archived practices drop out of the switcher and the import picker
+  // and stay readable everywhere else.
+  archivedAt DateTime?
+
+  batches ImportBatch[]
+  rows    DenialRow[]
+  claims  OrgClaim[]
+  users   User[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([orgId, archivedAt])
+  @@map("practices")
 }
 
 // One upload. Holds either denial rows or claim rows depending on `kind`, which
@@ -329,6 +473,12 @@ model ImportBatch {
   id             String       @id @default(cuid())
   orgId          String
   org            Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  // Which clinic the file was for. Nullable: every batch uploaded before
+  // practices existed has none, and a workspace that never creates a practice
+  // never sets one. This is where practiceId is actually CHOSEN — the rows and
+  // claims below copy it from here at import time.
+  practiceId     String?
+  practice       Practice?    @relation(fields: [practiceId], references: [id])
   kind           ImportKind   @default(DENIALS)
   // A sample-practice batch, seeded with the workspace so a new account has
   // something to look at. Dropped the moment a real file lands, because seeded
@@ -360,6 +510,15 @@ model DenialRow {
   batchId String
   batch   ImportBatch  @relation(fields: [batchId], references: [id], onDelete: Cascade)
 
+  // Denormalised from the batch, on purpose. batchId implies the practice, but
+  // the worklist query scans up to 50k rows and a join to reach the filter
+  // would be paid on every one of them; one nullable FK written at import time
+  // makes it a direct predicate instead. It also lets a mis-filed row be
+  // reassigned without moving it between batches, which is the repair a biller
+  // will actually ask for.
+  practiceId String?
+  practice   Practice? @relation(fields: [practiceId], references: [id])
+
   // Facts as they arrived. De-identified by construction.
   claimNumber String?
   payer       String?
@@ -385,6 +544,13 @@ model DenialRow {
   // here must correspond to real work. See lib/denials/score.ts.
   lastTouchedAt DateTime?
 
+  // When a machine last changed this row — the import reconciler closing it out
+  // against a remittance. Separate from lastTouchedAt on purpose: the reconciler
+  // used to stamp that one, which told the priority score a human had just
+  // handled the row and reset its staleness. Two clocks, because they answer two
+  // different questions.
+  reconciledAt DateTime?
+
   // A date the biller set themselves, usually when marking a row sent. Their
   // judgement about when to look again outranks anything derived, so an overdue
   // follow-up lifts the row in the queue.
@@ -392,6 +558,7 @@ model DenialRow {
 
   drafts      DenialDraft[]
   submissions DenialSubmission[]
+  events      DenialEvent[]
   workedEvent DenialWorkedEvent?
   createdAt   DateTime           @default(now())
   updatedAt   DateTime           @updatedAt
@@ -400,6 +567,10 @@ model DenialRow {
   @@index([batchId])
   // Overdue follow-ups are read across the whole workspace, not per batch.
   @@index([orgId, followUpAt])
+  // The worklist's own predicate once a practice is isolated. Created
+  // CONCURRENTLY in its own migration — Prisma wraps a migration in a
+  // transaction, and CREATE INDEX CONCURRENTLY cannot run inside one.
+  @@index([orgId, practiceId, status])
   @@map("denial_rows")
 }
 
@@ -417,8 +588,16 @@ model DenialDraft {
   summary   String?
   // Revisions append rather than overwrite, so a customer can go back to the
   // draft they preferred after asking for it shorter.
-  version   Int      @default(1)
-  createdAt DateTime @default(now())
+  version   Int         @default(1)
+  // Defaulted, so every version written before biller editing existed reads as
+  // what it was: the model's.
+  source    DraftSource @default(MODEL)
+  // When the note that fed this version was written — a timestamp, never the
+  // note itself, which lives on DenialRow.note and is free text a human typed.
+  // Stored rather than derived because the note changes and this version does
+  // not: "drafted from your note of 12 Sep" has to stay true in October.
+  noteAt    DateTime?
+  createdAt DateTime    @default(now())
 
   @@index([orgId, createdAt(sort: Desc)])
   @@index([rowId, version])
@@ -587,6 +766,12 @@ model OrgClaim {
   batchId String
   batch   ImportBatch  @relation(fields: [batchId], references: [id], onDelete: Cascade)
 
+  // Copied from the batch at import time, for the same reason DenialRow carries
+  // one: the analytics queries read claims by the millions-of-cents and would
+  // otherwise join to filter.
+  practiceId String?
+  practice   Practice? @relation(fields: [practiceId], references: [id])
+
   claimNumber String?
   payer       String?
   status      OrgClaimStatus @default(UNKNOWN)
@@ -612,6 +797,8 @@ model OrgClaim {
   @@index([orgId, serviceDate])
   // Joins a denied claim back to the worklist row that is working it.
   @@index([orgId, claimNumber])
+  // Created CONCURRENTLY in its own migration. See DenialRow.
+  @@index([orgId, practiceId])
   @@map("org_claims")
 }
 
@@ -654,6 +841,19 @@ model ClaimWork {
   reviewFactsHash String?
   reviewedAt      DateTime?
 
+  // The last bounded verdict — the constrained judgment the prose above is a
+  // reading of. Same cache contract as reviewBody, one layer earlier, but keyed
+  // on a wider hash: the verdict also depends on the balance and on how long is
+  // left to file, neither of which reviewFactsHash fingerprints.
+  //
+  // Json because it is structured and read field by field. A Json column's shape
+  // is not enforced by the database, so an older-shaped verdict must parse to
+  // "no verdict" rather than throw — see lib/claims/predict.ts.
+  predictionBody      Json?
+  predictionFactsHash String?
+  predictionModel     String?
+  predictedAt         DateTime?
+
   // Stamped explicitly on real work, never @updatedAt — the same rule
   // DenialRow.lastTouchedAt follows, for the same reason.
   lastTouchedAt DateTime?
@@ -688,6 +888,138 @@ model ClaimEvent {
 
   @@index([orgId, workId, createdAt(sort: Desc)])
   @@map("claim_events")
+}
+
+// How one person has set up their worklist, and where they were in it.
+//
+// Org-scoped as well as user-scoped because everything customer-facing here is,
+// and because the same person working two workspaces wants two layouts rather
+// than one that follows them between customers.
+//
+// Every column is nullable and means "not chosen": a workspace that has never
+// touched any of this has no row at all, and the client falls back to its own
+// defaults rather than to zeroes written by a migration.
+model WorklistPreference {
+  id     String       @id @default(cuid())
+  orgId  String
+  org    Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  userId String
+  user   User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // { "claim": 220, "payer": 180 } — column key to pixel width.
+  columnWidths Json?
+  // How much width the table keeps when the work panel is open, 0.35-0.75.
+  splitRatio   Float?
+
+  // Where this person was when they last closed the page. Plain strings, not a
+  // relation: a resume pointer to a row that has since been deleted should read
+  // as "nothing to resume", not block the delete or fail a join.
+  lastRowId String?
+  lastStep  String?
+
+  // When they last said they had seen the queue. Read by the "what changed"
+  // digest; stamped on an explicit action, never on render.
+  worklistSeenAt DateTime?
+
+  // Keystrokes in the letter editor that were never committed as a version.
+  //
+  // There is no autosave: a DenialDraft row every two seconds would turn the
+  // version list into landfill and destroy the one thing it is for, going back
+  // to the draft you preferred. So unsaved text parks here instead, offered
+  // back as Restore or Discard, and a version is only ever written on a
+  // deliberate Save.
+  //
+  // scratchRowId is what makes this safe to hand back. One row per person per
+  // workspace holds one scratch, and without the row it belongs to, reopening a
+  // different claim would offer someone the half-edited letter from another
+  // one. It is a plain string for the same reason lastRowId is.
+  //
+  // scratchBody passes the same patient-placeholder guard as saveDraftBody. It
+  // is a letter body with [PATIENT NAME] still in it, like every other body
+  // this schema holds.
+  scratchRowId       String?
+  scratchBody        String?
+  scratchBaseVersion Int?
+  scratchAt          DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([orgId, userId])
+  @@map("worklist_preferences")
+}
+
+// One thing that happened to a denial row. Append-only.
+//
+// DenialRow.note is a single column that every save overwrites, so a biller who
+// wrote "called Aetna, they want the op note" and later wrote "op note faxed"
+// had destroyed the first sentence to write the second. The column stays as the
+// current value — draft-response.ts reads it to build the letter — and this is
+// where its history lives.
+//
+// Deliberately not a DenialNote table. The worklist needs a dated history of
+// everything that happened to a row, not just of its notes, and two append-only
+// tables would mean merging three sources into one timeline instead of one.
+// NOTE_ADDED.detail IS the note history.
+//
+// Same no-PHI rule as the column it shadows: a note records what a payer said on
+// the phone, never who the patient is.
+model DenialEvent {
+  id    String       @id @default(cuid())
+  orgId String
+  org   Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  rowId String
+  row   DenialRow    @relation(fields: [rowId], references: [id], onDelete: Cascade)
+
+  kind    DenialEventKind
+  // The note body for NOTE_ADDED; the date, or "cleared", for FOLLOW_UP_SET;
+  // "To Work to Drafted" for STATUS_CHANGED.
+  detail  String?
+  // Plain string, no relation — matching ClaimEvent.actorId and
+  // ImportBatch.uploadedById.
+  actorId String?
+
+  createdAt DateTime @default(now())
+
+  @@index([orgId, rowId, createdAt(sort: Desc)])
+  @@map("denial_events")
+}
+
+// One thing somebody did with the product. Append-only, and counted, never read
+// back one row at a time.
+//
+// WHY THIS IS NOT A ClaimEvent. ClaimEvent is the biller's own record of what
+// happened to a claim, and a biller reads it before phoning a payer. "Dana
+// expanded the code review" is not part of that story, and putting it there
+// would bury the three entries that are under forty that are not.
+//
+// WHY THERE IS NO claimId. The question this answers is a distribution — of a
+// hundred opened claims, how many end at the drafter — and a distribution needs
+// counts, not a trail. Storing which claim would make every row joinable back to
+// a patient's claim number through OrgClaim, turn a counter into a behavioural
+// log about named people, and tempt exactly the per-claim read this is not for.
+// The orgId is here because everything customer-facing in this schema is
+// org-scoped; the userId because "one biller does this, four do not" and "all
+// five do this" are different findings.
+//
+// `detail` is a bounded qualifier from lib/usage/events.ts — a section id, or
+// where a jump to the drafter started from. The router rejects anything else, so
+// no free text and no identifier can reach this column.
+model UsageEvent {
+  id     String       @id @default(cuid())
+  orgId  String
+  org    Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  // Plain string, no relation — matching ClaimEvent.actorId. A deleted user
+  // should not take the counts they contributed to with them.
+  userId String?
+
+  name   UsageEventName
+  detail String?
+
+  createdAt DateTime @default(now())
+
+  @@index([orgId, name, createdAt(sort: Desc)])
+  @@map("usage_events")
 }
 
 // A request for a direct data connection. Database and EHR connectors are a

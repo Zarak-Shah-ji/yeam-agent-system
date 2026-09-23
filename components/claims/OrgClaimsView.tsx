@@ -12,10 +12,12 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { EmptyCard } from '@/components/insights/EmptyCard'
+import { useUsage } from '@/components/shared/use-usage'
 import type { AgingBucket } from '@/lib/insights/aggregate'
 import { NoWorkspace, isNoWorkspace } from '@/components/insights/NoWorkspace'
 import { ClaimsSummary } from './ClaimsSummary'
 import { ClaimDetailDialog } from './ClaimDetailDialog'
+import { SlidersHorizontal, X } from 'lucide-react'
 import { STATUS_LABEL, STATUS_VARIANT } from './status'
 import Link from 'next/link'
 
@@ -55,15 +57,28 @@ export function OrgClaimsView() {
   const status = params.get('status') ?? ALL
   const payer = params.get('payer') ?? ALL
   const carc = params.get('carc') ?? ALL
+  /**
+   * Set by the drill-in from the Analytics procedure card.
+   *
+   * There is no dropdown for it — the snapshot can carry hundreds of distinct
+   * CPTs, which is a list nobody scrolls. It arrives from a link and leaves
+   * through its chip, which is the whole lifecycle it needs.
+   */
+  const cpt = params.get('cpt') ?? ALL
   const aging = params.get('aging') ?? ALL
   const sort = params.get('sort') ?? 'newest'
   const unsettled = params.get('unsettled') === '1'
   const search = params.get('q') ?? ''
   const openClaim = params.get('claim')
+  const openSection = params.get('open')
 
   /** Typing is local; the query only moves once typing stops. */
   const [draftSearch, setDraftSearch] = useState(search)
   const [pages, setPages] = useState(1)
+  /** Local, not in the URL: whether the refining controls are on screen is a
+   *  property of this reader's session, not of the view being shared. A link
+   *  carries which filters are ON — the chips render those either way. */
+  const [showFilters, setShowFilters] = useState(false)
 
   function setParam(next: Record<string, string | null>) {
     const q = new URLSearchParams(params.toString())
@@ -72,8 +87,10 @@ export function OrgClaimsView() {
       else q.set(key, value)
     }
     // A filter change invalidates the page count — the cursor it was built from
-    // belongs to the old result set.
-    if (!('claim' in next)) setPages(1)
+    // belongs to the old result set. Opening a claim or a section inside one is
+    // not a filter change, and resetting a biller's loaded pages because they
+    // expanded a panel would be its own small betrayal.
+    if (!('claim' in next) && !('open' in next)) setPages(1)
     router.replace(q.toString() ? `/claims?${q}` : '/claims', { scroll: false })
   }
 
@@ -95,11 +112,41 @@ export function OrgClaimsView() {
   const carcNames = trpc.claims.carcNames.useQuery()
   const unworked = trpc.insights.unworkedDenials.useQuery()
   const utils = trpc.useUtils()
+  const usage = useUsage()
+
+  /**
+   * Where a row goes when it is clicked.
+   *
+   * A claim that already has a row in the drafter is a claim somebody decided
+   * to work. Sending it to the record dialog first put a summary of that
+   * decision in front of the work it led to — and the dialog's own most likely
+   * next click was the button back out to the drafter. So the row goes where
+   * the work is, and the record is the secondary link beside it. That is a
+   * straight inversion of what was here: the tiny "in the drafter" link that
+   * used to sit in the status cell was the surface admitting which destination
+   * it had backwards.
+   *
+   * ON WHAT AUTHORITY, given the events above exist precisely because nobody
+   * knows. This one does not need them: a row with a worklistRowId is not a
+   * guess about intent, it is a decision a colleague already recorded. The
+   * events are here to say whether the dialog should shrink further for every
+   * OTHER row — and CLAIM_TO_DRAFTER's two origins are what would show this
+   * change was wrong, by counting the people who come straight back.
+   */
+  const openRow = (row: { id: string; worklistRowId?: string | null }) => {
+    if (row.worklistRowId) {
+      usage.track('CLAIM_TO_DRAFTER', 'list')
+      router.push(`/worklist?row=${row.worklistRowId}`)
+      return
+    }
+    setParam({ claim: row.id, open: null })
+  }
 
   const filters = {
     ...(status === ALL ? {} : { status: status as 'PAID' }),
     ...(payer === ALL ? {} : { payer }),
     ...(carc === ALL ? {} : { carc }),
+    ...(cpt === ALL ? {} : { cpt }),
     ...(aging === ALL ? {} : { aging: aging as '0-30' }),
     ...(search.trim() ? { search: search.trim() } : {}),
     ...(unsettled ? { unsettled: true } : {}),
@@ -155,136 +202,186 @@ export function OrgClaimsView() {
   }
 
   const items = claims.data?.items ?? []
+
+  // One chip per active filter, so a narrowed table can never read as the whole
+  // snapshot. Keyed by the URL param, so removing one is setParam({ key: null }).
+  const chips = [
+    status === ALL ? null : { key: 'status', label: STATUS_LABEL[status] ?? status },
+    payer === ALL ? null : { key: 'payer', label: payer },
+    carc === ALL ? null : { key: 'carc', label: carc },
+    cpt === ALL ? null : { key: 'cpt', label: `CPT ${cpt}` },
+    aging === ALL ? null : { key: 'aging', label: AGING_LABEL[aging] ?? aging },
+    unsettled ? { key: 'unsettled', label: 'Unsettled only' } : null,
+  ].filter((c): c is { key: string; label: string } => c !== null)
+
   const filtered =
-    status !== ALL || payer !== ALL || carc !== ALL || aging !== ALL || unsettled || search.trim()
+    status !== ALL ||
+    payer !== ALL ||
+    carc !== ALL ||
+    cpt !== ALL ||
+    aging !== ALL ||
+    unsettled ||
+    search.trim()
 
   return (
     <div className="space-y-4">
-      {state.data?.claimsSnapshotAt && (
-        <p className="text-sm text-gray-500">
-          From <span className="font-medium text-gray-700">{state.data.claimsSnapshotFilename}</span>
-          , imported {format(new Date(state.data.claimsSnapshotAt), 'MMM d, yyyy')}. Only your most
-          recent claims export is read, so two monthly snapshots never double-count.
-        </p>
-      )}
-
-      {(unworked.data?.count ?? 0) > 0 && (
-        <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2.5">
-          <p className="text-sm text-amber-900">
-            <span className="font-semibold">{unworked.data!.count} denied claims</span> in this
-            export aren&rsquo;t on your worklist — {usd.format(unworked.data!.billed)} not being
-            worked.
-          </p>
-          <Button size="sm" disabled={addToWorklist.isPending} onClick={() => addToWorklist.mutate()}>
-            {addToWorklist.isPending ? 'Adding…' : 'Add them to the worklist'}
-          </Button>
-        </div>
-      )}
-
       <ClaimsSummary
         data={summary.data}
         isLoading={summary.isLoading}
         filtered={Boolean(filtered)}
         activeBucket={aging === ALL ? null : aging}
         onPickBucket={(bucket: AgingBucket | null) => setParam({ aging: bucket })}
+        snapshot={
+          state.data?.claimsSnapshotAt
+            ? {
+                filename: state.data.claimsSnapshotFilename ?? null,
+                at: state.data.claimsSnapshotAt,
+              }
+            : null
+        }
+        unworked={unworked.data?.count ? { count: unworked.data.count } : null}
+        onWorkDenied={() => addToWorklist.mutate()}
+        working={addToWorklist.isPending}
       />
 
-      <div className="flex flex-wrap items-center gap-2">
-        <Input
-          placeholder="Search claim number, CPT or ICD-10…"
-          value={draftSearch}
-          onChange={e => setDraftSearch(e.target.value)}
-          className="max-w-xs"
-        />
-        <Select value={status} onValueChange={v => setParam({ status: v })}>
-          <SelectTrigger className="w-40">
-            <SelectValue placeholder="All statuses" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value={ALL}>All statuses</SelectItem>
-            {Object.entries(STATUS_LABEL).map(([value, label]) => (
-              <SelectItem key={value} value={value}>
-                {label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        <Select value={payer} onValueChange={v => setParam({ payer: v })}>
-          <SelectTrigger className="w-52">
-            <SelectValue placeholder="All payers" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value={ALL}>All payers</SelectItem>
-            {(payerNames.data ?? []).map(name => (
-              <SelectItem key={name} value={name}>
-                {name}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        <Select value={carc} onValueChange={v => setParam({ carc: v })}>
-          <SelectTrigger className="w-40">
-            <SelectValue placeholder="All reasons" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value={ALL}>All reason codes</SelectItem>
-            {(carcNames.data ?? []).map(code => (
-              <SelectItem key={code} value={code}>
-                {code}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        <Select value={aging} onValueChange={v => setParam({ aging: v })}>
-          <SelectTrigger className="w-36">
-            <SelectValue placeholder="Any age" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value={ALL}>Any age</SelectItem>
-            {Object.entries(AGING_LABEL).map(([value, label]) => (
-              <SelectItem key={value} value={value}>
-                {label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        <Select value={sort} onValueChange={v => setParam({ sort: v === 'newest' ? null : v })}>
-          <SelectTrigger className="w-40">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {Object.entries(SORT_LABEL).map(([value, label]) => (
-              <SelectItem key={value} value={value}>
-                {label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        {/*
-          "Unsettled", not "has a balance": this is a status test, because
-          billed-minus-paid is column arithmetic a where clause cannot do. The
-          label says what it actually filters on.
-        */}
-        <Button
-          type="button"
-          size="sm"
-          variant={unsettled ? 'default' : 'outline'}
-          onClick={() => setParam({ unsettled: unsettled ? null : '1' })}
-          aria-pressed={unsettled}
-        >
-          Unsettled only
-        </Button>
-        {filtered && (
+      {/*
+        Search and the one cut a biller reaches for most stay on the page; the
+        other five controls are behind a disclosure. The rule is what a control
+        is FOR: finding a specific claim (search) or the single most common
+        narrowing (unsettled) stays out; everything that refines a view you are
+        already looking at folds away.
+
+        An active filter ALWAYS shows as a removable chip. A filtered view that
+        can look unfiltered is the one way hiding these controls could mislead
+        somebody, so the chips are not optional dressing.
+      */}
+      <div className="space-y-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <Input
+            placeholder="Search claim number, CPT or ICD-10…"
+            value={draftSearch}
+            onChange={e => setDraftSearch(e.target.value)}
+            className="max-w-xs"
+          />
+          {/*
+            "Unsettled", not "has a balance": this is a status test, because
+            billed-minus-paid is column arithmetic a where clause cannot do. The
+            label says what it actually filters on.
+          */}
+          <Button
+            type="button"
+            size="sm"
+            variant={unsettled ? 'default' : 'outline'}
+            onClick={() => setParam({ unsettled: unsettled ? null : '1' })}
+            aria-pressed={unsettled}
+          >
+            Unsettled only
+          </Button>
           <Button
             type="button"
             size="sm"
             variant="ghost"
-            onClick={() =>
-              setParam({ status: null, payer: null, carc: null, aging: null, unsettled: null, q: null })
-            }
+            aria-expanded={showFilters}
+            onClick={() => setShowFilters(v => !v)}
           >
-            Clear
+            <SlidersHorizontal className="mr-1.5 h-3.5 w-3.5" aria-hidden="true" />
+            Filters
           </Button>
+
+          {chips.map(chip => (
+            <button
+              key={chip.key}
+              type="button"
+              onClick={() => setParam({ [chip.key]: null })}
+              className="inline-flex items-center gap-1 rounded-full border border-blue-200 bg-blue-50 px-2.5 py-1 text-xs font-medium text-blue-800 hover:bg-blue-100"
+            >
+              {chip.label}
+              <X className="h-3 w-3" aria-hidden="true" />
+              <span className="sr-only">Remove this filter</span>
+            </button>
+          ))}
+
+          {filtered && (
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              onClick={() =>
+                setParam({ status: null, payer: null, carc: null, aging: null, unsettled: null, q: null })
+              }
+            >
+              Clear
+            </Button>
+          )}
+        </div>
+
+        {showFilters && (
+          <div className="flex flex-wrap items-center gap-2 rounded-md border border-gray-200 bg-gray-50 p-2">
+            <Select value={status} onValueChange={v => setParam({ status: v })}>
+              <SelectTrigger className="w-40">
+                <SelectValue placeholder="All statuses" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={ALL}>All statuses</SelectItem>
+                {Object.entries(STATUS_LABEL).map(([value, label]) => (
+                  <SelectItem key={value} value={value}>
+                    {label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Select value={payer} onValueChange={v => setParam({ payer: v })}>
+              <SelectTrigger className="w-52">
+                <SelectValue placeholder="All payers" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={ALL}>All payers</SelectItem>
+                {(payerNames.data ?? []).map(name => (
+                  <SelectItem key={name} value={name}>
+                    {name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Select value={carc} onValueChange={v => setParam({ carc: v })}>
+              <SelectTrigger className="w-40">
+                <SelectValue placeholder="All reasons" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={ALL}>All reason codes</SelectItem>
+                {(carcNames.data ?? []).map(code => (
+                  <SelectItem key={code} value={code}>
+                    {code}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Select value={aging} onValueChange={v => setParam({ aging: v })}>
+              <SelectTrigger className="w-36">
+                <SelectValue placeholder="Any age" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={ALL}>Any age</SelectItem>
+                {Object.entries(AGING_LABEL).map(([value, label]) => (
+                  <SelectItem key={value} value={value}>
+                    {label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Select value={sort} onValueChange={v => setParam({ sort: v === 'newest' ? null : v })}>
+              <SelectTrigger className="w-40">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {Object.entries(SORT_LABEL).map(([value, label]) => (
+                  <SelectItem key={value} value={value}>
+                    {label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
         )}
       </div>
 
@@ -297,10 +394,7 @@ export function OrgClaimsView() {
                 <TableHead>Payer</TableHead>
                 <TableHead>Service date</TableHead>
                 <TableHead>Status</TableHead>
-                <TableHead>CPT</TableHead>
-                <TableHead>Reason</TableHead>
                 <TableHead className="text-right">Billed</TableHead>
-                <TableHead className="text-right">Paid</TableHead>
                 <TableHead className="text-right">Balance</TableHead>
               </TableRow>
             </TableHeader>
@@ -308,7 +402,7 @@ export function OrgClaimsView() {
               {claims.isLoading &&
                 [0, 1, 2, 3, 4].map(i => (
                   <TableRow key={i}>
-                    <TableCell colSpan={9}>
+                    <TableCell colSpan={6}>
                       <Skeleton className="h-6 w-full" />
                     </TableCell>
                   </TableRow>
@@ -316,7 +410,7 @@ export function OrgClaimsView() {
 
               {!claims.isLoading && items.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={9} className="py-8 text-center text-sm text-gray-500">
+                  <TableCell colSpan={6} className="py-8 text-center text-sm text-gray-500">
                     No claims match those filters.
                   </TableCell>
                 </TableRow>
@@ -327,22 +421,32 @@ export function OrgClaimsView() {
                   key={row.id}
                   tabIndex={0}
                   role="button"
-                  aria-label={`Open claim ${row.claimNumber ?? row.id}`}
+                  aria-label={
+                    row.worklistRowId
+                      ? `Open claim ${row.claimNumber ?? row.id} in the drafter`
+                      : `Open claim ${row.claimNumber ?? row.id}`
+                  }
                   className="cursor-pointer hover:bg-gray-50"
-                  onClick={() => setParam({ claim: row.id })}
+                  onClick={() => openRow(row)}
                   onKeyDown={e => {
                     if (e.key === 'Enter' || e.key === ' ') {
                       e.preventDefault()
-                      setParam({ claim: row.id })
+                      openRow(row)
                     }
                   }}
                 >
                   {/* Three weights, not nine. The claim number is what someone
                       scans for and the balance is what they are scanning for it
                       about, so those two carry the ink; payer and status place
-                      the row; date, CPT and reason confirm it once found, and
-                      recede until then. Every money column is tabular so the
-                      digits stack into a column the eye can run down. */}
+                      the row; the date confirms it once found and recedes until
+                      then. Every money column is tabular so the digits stack
+                      into a column the eye can run down.
+
+                      CPT and Paid used to have columns of their own. CPT is
+                      confirmation-after-finding, which is the detail's job, and
+                      it is already searchable; Paid sat between Billed and
+                      Balance, which bracket it, and was the one of the three
+                      that stopped being read. */}
                   <TableCell className="font-mono text-sm font-medium text-gray-900">
                     {row.claimNumber ?? '—'}
                   </TableCell>
@@ -350,18 +454,39 @@ export function OrgClaimsView() {
                   <TableCell className="text-xs tabular-nums text-gray-500">
                     {row.serviceDate ? format(new Date(row.serviceDate), 'MM/dd/yyyy') : '—'}
                   </TableCell>
+                  {/* Status and reason are two halves of one fact — a denial is
+                      never read without asking what for — so they share a cell
+                      rather than a column each. */}
                   <TableCell>
                     <Badge variant={STATUS_VARIANT[row.status] ?? 'secondary'}>
                       {STATUS_LABEL[row.status] ?? row.status}
                     </Badge>
+                    {row.carc && (
+                      <span className="mt-0.5 block font-mono text-[11px] text-gray-500">
+                        {row.carc}
+                      </span>
+                    )}
+                    {/* Already being worked, so the row itself now leads to the
+                        drafter and this is the way to the record instead. The
+                        reconciliation question — the payer portal says $340,
+                        what do we have — still needs somewhere to go, and it is
+                        the rarer of the two. The row is a button, so this has
+                        to stop the click reaching it. */}
+                    {row.worklistRowId && (
+                      <button
+                        type="button"
+                        onClick={e => {
+                          e.stopPropagation()
+                          setParam({ claim: row.id, open: null })
+                        }}
+                        className="mt-0.5 block text-[11px] font-medium text-blue-600 underline"
+                      >
+                        claim record
+                      </button>
+                    )}
                   </TableCell>
-                  <TableCell className="font-mono text-xs text-gray-500">{row.cpt ?? '—'}</TableCell>
-                  <TableCell className="font-mono text-xs text-gray-500">{row.carc ?? '—'}</TableCell>
                   <TableCell className="text-right text-sm tabular-nums text-gray-600">
                     {usd.format(row.billed)}
-                  </TableCell>
-                  <TableCell className="text-right text-sm tabular-nums text-gray-500">
-                    {row.paid === null ? '—' : usd.format(row.paid)}
                   </TableCell>
                   <TableCell className="text-right text-sm font-semibold tabular-nums text-gray-900">
                     {row.balance > 0 ? (
@@ -393,7 +518,16 @@ export function OrgClaimsView() {
       <ClaimDetailDialog
         claimId={openClaim}
         open={Boolean(openClaim)}
-        onOpenChange={open => !open && setParam({ claim: null })}
+        // Both, always: a stale ?open= outliving the claim it belonged to would
+        // greet the next reader with a section expanded on a record they have
+        // not looked at yet.
+        onOpenChange={open => !open && setParam({ claim: null, open: null })}
+        section={
+          openSection === 'denial' || openSection === 'codes' || openSection === 'work'
+            ? openSection
+            : null
+        }
+        onSection={id => setParam({ open: id })}
       />
     </div>
   )

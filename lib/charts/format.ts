@@ -10,11 +10,18 @@ export function usd(value: number | null | undefined): string {
   return value === null || value === undefined ? '—' : USD.format(value)
 }
 
-/** Axis ticks only. `$12k` fits under a tick where `$12,400` does not. */
+/**
+ * Axis ticks only. `$12k` fits under a tick where `$12,400` does not.
+ *
+ * One decimal under $10k: rounding to whole thousands printed `$2k` under two
+ * adjacent ticks (1,600 and 2,400) and `$3k` on bars worth $2,548 and $3,191,
+ * which made a ranked chart look like a tie.
+ */
 export function usdCompact(value: number): string {
   const abs = Math.abs(value)
   if (abs >= 1_000_000) return `$${(value / 1_000_000).toFixed(abs >= 10_000_000 ? 0 : 1)}M`
-  if (abs >= 1_000) return `$${Math.round(value / 1_000)}k`
+  if (abs >= 10_000) return `$${Math.round(value / 1_000)}k`
+  if (abs >= 1_000) return `$${(value / 1_000).toFixed(1).replace(/\.0$/, '')}k`
   return `$${Math.round(value)}`
 }
 

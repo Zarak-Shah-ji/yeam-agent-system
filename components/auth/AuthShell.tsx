@@ -9,7 +9,7 @@ import Image from 'next/image'
  * a sales claim sitting on a sign-in screen. This is one full-bleed canvas
  * with a single card on it: mark, name, the form, nothing else.
  *
- * The name is "Yeam". The ".ai" suffix is a domain, not the brand.
+ * The wordmark is "yeam", lowercase. The ".ai" suffix is a domain, not the brand.
  *
  * Palette is sampled straight off the mark: the three drifting fields are its
  * three faces — highlight cyan #05DBF0, right face #057FCF, left face #07538F —
@@ -63,7 +63,7 @@ export function AuthShell({
             />
 
             <h1 className="mt-4 text-[2.125rem] font-extrabold leading-none tracking-[-0.035em] text-white">
-              Yeam
+              yeam
             </h1>
             <p className="mt-3 text-sm font-medium text-slate-400">{subtitle}</p>
           </div>

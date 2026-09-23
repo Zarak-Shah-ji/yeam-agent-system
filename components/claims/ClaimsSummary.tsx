@@ -1,5 +1,7 @@
 'use client'
 
+import { format } from 'date-fns'
+import { ChevronRight } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
 import { ViewToggle, useAnalyticsView } from '@/components/charts/ViewToggle'
@@ -22,7 +24,13 @@ export type ClaimSummaryData = {
   outstanding: number
   denied: number
   deniedBilled: number
-  buckets: readonly { bucket: AgingBucket; amount: number; count: number }[]
+  buckets: readonly {
+    bucket: AgingBucket
+    amount: number
+    count: number
+    avgDays: number | null
+    oldestDays: number | null
+  }[]
   undated: { amount: number; count: number }
   truncated: boolean
 }
@@ -36,7 +44,7 @@ function Figure({
 }: {
   label: string
   value: string
-  note: string
+  note: React.ReactNode
   tone?: 'money' | 'warning'
 }) {
   return (
@@ -50,7 +58,7 @@ function Figure({
       >
         {value}
       </p>
-      <p className="mt-0.5 text-xs text-gray-500">{note}</p>
+      <div className="mt-0.5 text-xs text-gray-500">{note}</div>
     </div>
   )
 }
@@ -79,6 +87,10 @@ export function ClaimsSummary({
   filtered,
   activeBucket,
   onPickBucket,
+  snapshot,
+  unworked,
+  onWorkDenied,
+  working,
 }: {
   data: ClaimSummaryData | undefined
   isLoading: boolean
@@ -86,6 +98,15 @@ export function ClaimsSummary({
   filtered: boolean
   activeBucket: string | null
   onPickBucket: (bucket: AgingBucket | null) => void
+  /** Which export these figures came from. Part of the same scope claim the
+   *  heading makes, so it reads as one sentence rather than a stray line. */
+  snapshot: { filename: string | null; at: Date | string } | null
+  /** How many denied claims in this export nobody is working. The dollars are
+   *  already on this figure — a second amount here would only invite adding
+   *  the two together. */
+  unworked: { count: number } | null
+  onWorkDenied: () => void
+  working: boolean
 }) {
   const [view, setView] = useAnalyticsView()
 
@@ -108,11 +129,40 @@ export function ClaimsSummary({
   return (
     <Card>
       <CardContent className="p-4">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <h2 className="text-sm font-medium text-gray-700">
-            {filtered ? 'Matching your filters' : 'This snapshot'}
-          </h2>
-          <ViewToggle value={view} onChange={setView} />
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 className="text-sm font-medium text-gray-700">
+              {filtered ? 'Matching your filters' : 'This snapshot'}
+            </h2>
+            {/* Which file these figures came from. This used to be a paragraph
+                of its own above the card, which made the page open on a
+                sentence about de-duplication rather than on a number. The
+                heading already asserts a scope; the filename is the rest of
+                that same assertion, and the caveat is a click away. */}
+            {snapshot && (
+              // A div, not a p: the disclosure below is a <details>, and
+              // <details> inside <p> is invalid HTML. The browser silently
+              // closes the paragraph early, React then hydrates against a tree
+              // the parser never built, and the whole page re-renders — which
+              // showed up as the theme flickering to light on first paint.
+              <div className="mt-0.5 text-xs text-gray-500">
+                From{' '}
+                <span className="font-medium text-gray-600">
+                  {snapshot.filename ?? 'your last export'}
+                </span>
+                , imported {format(new Date(snapshot.at), 'MMM d, yyyy')}.{' '}
+                <details className="inline">
+                  <summary className="inline cursor-pointer list-none underline decoration-dotted underline-offset-2">
+                    Why only one export
+                  </summary>
+                  <span className="ml-1">
+                    Only your most recent claims export is read, so two monthly snapshots never
+                    double-count.
+                  </span>
+                </details>
+              </div>
+            )}
+          </div>
         </div>
 
         <div className="mt-3 grid gap-4 sm:grid-cols-3">
@@ -134,16 +184,56 @@ export function ClaimsSummary({
                   : 'in this snapshot'
             }
           />
+          {/*
+            The call to action sits on the number it is about. It was a full
+            amber banner stacked above this card — a third block competing with
+            the figure that already said how many claims were denied.
+          */}
           <Figure
             label="Denied"
             value={data.denied.toLocaleString()}
-            note={`${usd(data.deniedBilled)} billed`}
+            note={
+              <>
+                {usd(data.deniedBilled)} billed
+                {unworked && unworked.count > 0 && (
+                  <>
+                    {' · '}
+                    <button
+                      type="button"
+                      disabled={working}
+                      onClick={onWorkDenied}
+                      className="font-medium text-amber-700 underline disabled:opacity-60"
+                    >
+                      {working
+                        ? 'Adding…'
+                        : `${unworked.count} not on your worklist — add them`}
+                    </button>
+                  </>
+                )}
+              </>
+            }
             tone={data.denied > 0 ? 'warning' : undefined}
           />
         </div>
 
-        <div className="mt-4 border-t border-gray-200 pt-3">
-          <p className="text-xs uppercase tracking-wide text-gray-500">Outstanding by age</p>
+        {/*
+          Aging is the one aggregate a sorted table cannot give you, so it opens
+          expanded. It is still a second question after "how much is out
+          there", so one click folds it away for anyone who only wants the
+          table.
+        */}
+        <details open className="group mt-4 border-t border-gray-200 pt-3">
+          <summary className="flex cursor-pointer list-none items-center gap-1.5 text-xs uppercase tracking-wide text-gray-500 hover:text-gray-700">
+            <ChevronRight
+              className="h-3.5 w-3.5 transition-transform group-open:rotate-90"
+              aria-hidden="true"
+            />
+            Outstanding by age
+          </summary>
+
+          <div className="mt-2 flex justify-end">
+            <ViewToggle value={view} onChange={setView} />
+          </div>
 
           {view === 'chart' ? (
             <div className="mt-1">
@@ -200,7 +290,7 @@ export function ClaimsSummary({
               date, so it cannot be aged.
             </p>
           )}
-        </div>
+        </details>
       </CardContent>
     </Card>
   )

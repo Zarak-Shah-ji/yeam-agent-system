@@ -1,4 +1,5 @@
 import type { PrismaClient } from '@prisma/client'
+import type { PracticeWhere } from '@/lib/practices/scope'
 import { money } from '@/lib/money'
 import type { ClaimFact, DenialFact } from '@/lib/insights/aggregate'
 import type { ClaimStatus } from '@/lib/imports/claims-profile'
@@ -137,27 +138,47 @@ export type Facts = {
 export function latestClaimsBatch(
   prisma: PrismaClient,
   orgId: string,
+  practiceWhere: PracticeWhere = {},
 ): Promise<ClaimsBatch | null> {
   return prisma.importBatch.findFirst({
-    where: { orgId, kind: 'CLAIMS' },
+    where: { orgId, ...practiceWhere, kind: 'CLAIMS' },
     orderBy: { createdAt: 'desc' },
     select: { id: true, createdAt: true, filename: true, statusDerived: true },
   })
 }
 
-export async function loadFacts(prisma: PrismaClient, orgId: string): Promise<Facts> {
-  const batch = await latestClaimsBatch(prisma, orgId)
+/**
+ * Everything the analytics and the chat agent read, for one workspace.
+ *
+ * `practiceWhere` narrows all three reads to one clinic. It is a spreadable
+ * fragment rather than a practiceId so that combined mode costs literally no
+ * predicate — see lib/practices/scope.ts. It never carries an orgId and must
+ * never be the only filter here.
+ *
+ * Note the batch lookup takes it too. The claims snapshot is per-clinic: a
+ * biller isolated to Riverside who sees Oakwood's newest A/R export gets
+ * Riverside's denials measured against Oakwood's payment turnarounds, which is
+ * wrong in a way no total on the page would reveal.
+ */
+export async function loadFacts(
+  prisma: PrismaClient,
+  orgId: string,
+  practiceWhere: PracticeWhere = {},
+): Promise<Facts> {
+  const batch = await latestClaimsBatch(prisma, orgId, practiceWhere)
 
   const [claimRows, denialRows] = await Promise.all([
     batch
       ? prisma.orgClaim.findMany({
-          where: { orgId, batchId: batch.id },
+          // batchId already implies the practice; the filter is kept anyway so
+          // that every read in this function names the same two boundaries.
+          where: { orgId, ...practiceWhere, batchId: batch.id },
           select: CLAIM_FIELDS,
           take: FACT_ROW_CAP,
         })
       : Promise.resolve([]),
     prisma.denialRow.findMany({
-      where: { orgId },
+      where: { orgId, ...practiceWhere },
       select: DENIAL_FIELDS,
       take: FACT_ROW_CAP,
     }),

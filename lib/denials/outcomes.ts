@@ -1,5 +1,7 @@
 import type { ArtifactType } from '@/lib/billing/appeal-prompt'
 import type { SubmissionChannelValue } from '@/lib/billing/submission'
+import { usd } from '@/lib/charts/format'
+import { MIN_SAMPLE } from '@/lib/stats/min-sample'
 
 /**
  * What came back, and what it adds up to.
@@ -270,6 +272,7 @@ export interface OutcomeGroup extends OutcomeTally {
   label: string
 }
 
+
 function group(
   records: readonly OutcomeRecord[],
   keyOf: (r: OutcomeRecord) => string | null,
@@ -356,4 +359,37 @@ export function coverage(records: readonly OutcomeRecord[]): {
     pending,
     rate: rate(total - pending, total),
   }
+}
+
+/**
+ * A tally in one line, worded the same everywhere a win rate appears — the
+ * payer panel and the Analytics outcomes card both print this, so the two can
+ * never describe the same rulings two ways.
+ *
+ * Counts before rates. "Won 3 of 4" carries its own denominator; a percentage
+ * is added only once MIN_SAMPLE rulings stand behind it, because below that
+ * "75%" reads as a finding and is really an anecdote.
+ *
+ * Null when nothing was ever sent — there is nothing to summarise.
+ */
+export function outcomeLine(t: OutcomeTally | null): string | null {
+  if (!t || t.attempts === 0) return null
+
+  const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? '' : 's'}`
+
+  if (t.decided === 0) {
+    if (t.pending > 0) return `${plural(t.pending, 'appeal')} sent, waiting on a ruling`
+    if (t.noResponse > 0) return `${plural(t.noResponse, 'appeal')} sent, never answered`
+    return 'Nothing ruled on yet'
+  }
+
+  const rulings = plural(t.decided, 'ruling')
+  const parts = [
+    t.decided >= MIN_SAMPLE && t.winRate !== null
+      ? `Won ${t.won} of ${rulings} (${Math.round(t.winRate)}%)`
+      : `Won ${t.won} of ${rulings} — too few to judge`,
+  ]
+  if (t.recovered > 0) parts.push(`${usd(t.recovered)} recovered`)
+  if (t.pending > 0) parts.push(`${t.pending} waiting`)
+  return parts.join(' · ')
 }

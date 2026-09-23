@@ -41,7 +41,17 @@ const PLACEHOLDER_PATTERN = /\[([A-Z0-9][A-Z0-9 ./'#-]{1,48})\]/g
  */
 export type PlaceholderOwner = 'patient' | 'practice' | 'other'
 
-const PATIENT_SLOTS = new Set([
+/**
+ * Exported because the server has to know these too.
+ *
+ * server/trpc/router/worklist.ts imports this set to reject a saved draft body
+ * that dropped a patient placeholder — the one write path where a biller could
+ * type an identifier into the letter and post it. That is an import of this file
+ * BY a server file, which is fine; the direction this file's header warns about
+ * is the reverse one, where this file acquires a server dependency. It still has
+ * none, and must not.
+ */
+export const PATIENT_SLOTS = new Set([
   'PATIENT NAME',
   'MEMBER ID',
   'MEMBER NUMBER',
@@ -129,4 +139,26 @@ export function unresolvedPlaceholders(
   values: Record<string, string>,
 ): Placeholder[] {
   return findPlaceholders(mergeLetter(body, values))
+}
+
+/**
+ * Patient slots the edit deleted — the signature of a name typed over a
+ * placeholder.
+ *
+ * An editable letter body is the one place a biller can put PHI somewhere it
+ * would be saved: select "[PATIENT NAME]", type "Jane Doe", save. Nothing can
+ * recognise "Jane Doe" as a name, but the placeholder that was standing there a
+ * moment ago is gone, and that is detectable exactly.
+ *
+ * Deliberately one-directional. Slots ADDED are ignored — a model that decides
+ * v4 also wants [MEMBER ID] is doing its job. And ordinary prose edits keep
+ * every token, so this is silent for the editing a biller actually does.
+ *
+ * Pure, and shared verbatim by the textarea's onChange guard and the mutation's
+ * server-side one, so the message a biller gets and the rule that is actually
+ * enforced can never drift apart.
+ */
+export function droppedPatientSlots(before: string, after: string): Placeholder[] {
+  const kept = new Set(findPlaceholders(after).map(p => p.key))
+  return findPlaceholders(before).filter(p => p.owner === 'patient' && !kept.has(p.key))
 }

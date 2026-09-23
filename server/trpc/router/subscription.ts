@@ -1,7 +1,8 @@
 import { TRPCError } from '@trpc/server'
+import { z } from 'zod'
 import { router, orgProcedure } from '../trpc'
 import { STRIPE_AVAILABLE, getStripe } from '@/lib/stripe'
-import { PLAN_LABEL, type Plan } from '@/lib/plans'
+import { PLAN_LABEL, PLAN_OVERRIDE_ENABLED, type Plan } from '@/lib/plans'
 
 /**
  * Buying a plan, and managing the one you have.
@@ -11,6 +12,19 @@ import { PLAN_LABEL, type Plan } from '@/lib/plans'
  * (app/api/stripe/webhook/route.ts), from an event Stripe signed. A mutation
  * here that wrote `plan` directly would be a paywall anyone could walk through
  * by calling it.
+ *
+ * ONE EXCEPTION, and it lives here rather than somewhere quieter precisely so
+ * that this paragraph cannot go on being true-sounding while it is false:
+ * `setPlanForTesting` writes `plan` directly. It is doubly gated — the
+ * deployment must have PLAN_OVERRIDE on (see lib/plans.ts), and the caller must
+ * be an ADMIN of the workspace, re-read from the database rather than taken
+ * from the session token. On a normal production deployment the flag is off and
+ * the mutation refuses everyone, admins included.
+ *
+ * It is here because a paywall you cannot stand behind is a paywall you cannot
+ * test. The honest options were this or a hardcoded bypass inside
+ * canReviewCodes, and a bypass inside the gate is invisible at exactly the
+ * moment it matters.
  */
 
 /** Where Stripe should send the customer back to. */
@@ -49,16 +63,30 @@ export const subscriptionRouter = router({
         plan: true,
         subscriptionStatus: true,
         currentPeriodEnd: true,
+        subscriptionCancelAt: true,
         stripeCustomerId: true,
       },
+    })
+
+    // Re-read rather than trusting the session: lib/auth.ts issues JWT
+    // sessions, so a role in the token is as old as the token.
+    const me = await ctx.prisma.user.findUnique({
+      where: { id: ctx.session.user!.id },
+      select: { role: true },
     })
 
     const plan = (org?.plan ?? 'TRIAGE') as Plan
     return {
       plan,
       planLabel: PLAN_LABEL[plan],
+      /** Whether to offer the testing control. Both halves of the gate. */
+      canSetPlanForTesting: PLAN_OVERRIDE_ENABLED && me?.role === 'ADMIN',
       status: org?.subscriptionStatus ?? null,
       currentPeriodEnd: org?.currentPeriodEnd ?? null,
+      // Set while a requested cancellation has yet to take effect. The plan is
+      // still paid until then, so this is the only thing that tells the customer
+      // their cancel worked.
+      cancelAt: org?.subscriptionCancelAt ?? null,
       // Whether to show "Manage billing" at all. A workspace that has never paid
       // has no portal to open.
       hasBillingAccount: !!org?.stripeCustomerId,
@@ -140,4 +168,51 @@ export const subscriptionRouter = router({
     })
     return { url: session.url }
   }),
+
+  /**
+   * Set this workspace's plan by hand, to look at the paid product.
+   *
+   * Named for what it is. Not "upgrade", not "setPlan" — anyone reading a call
+   * site should see immediately that this is a testing affordance and not part
+   * of how customers buy anything.
+   *
+   * Deliberately does NOT touch stripeCustomerId, subscriptionStatus or
+   * currentPeriodEnd. Those describe a real commercial relationship, and faking
+   * them would put this workspace into a state the webhook then has to reconcile
+   * against Stripe's view of the world. Only the entitlement column moves.
+   */
+  setPlanForTesting: orgProcedure
+    .input(z.object({ plan: z.enum(['TRIAGE', 'PRACTICE', 'GROUP', 'NETWORK']) }))
+    .mutation(async ({ ctx, input }) => {
+      if (!PLAN_OVERRIDE_ENABLED) {
+        throw new TRPCError({
+          code: 'FORBIDDEN',
+          message: 'Setting the plan by hand is switched off on this deployment.',
+        })
+      }
+
+      const me = await ctx.prisma.user.findUnique({
+        where: { id: ctx.session.user!.id },
+        select: { role: true },
+      })
+      if (me?.role !== 'ADMIN') {
+        throw new TRPCError({
+          code: 'FORBIDDEN',
+          message: 'Only an admin of this workspace can set the plan by hand.',
+        })
+      }
+
+      await ctx.prisma.organization.update({
+        where: { id: ctx.orgId },
+        data: { plan: input.plan },
+      })
+
+      // Loud on the server, because a plan that moved without a Stripe event is
+      // exactly the thing someone will be trying to explain later.
+      console.warn(
+        `[plan-override] ${ctx.session.user!.email ?? ctx.session.user!.id} set org ${ctx.orgId} to ${input.plan}`,
+      )
+
+      return { plan: input.plan as Plan, planLabel: PLAN_LABEL[input.plan as Plan] }
+    }),
 })

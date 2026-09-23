@@ -1,4 +1,5 @@
 import { PAYERS, type PayerProfile } from './payers'
+import { payerKey } from './payer-key'
 import { getPlaybook } from './denial-playbooks'
 import { resolveTexasPayer } from '@/lib/denials/draft-response'
 import type { ArtifactType } from './appeal-prompt'
@@ -110,17 +111,8 @@ export interface ResolvedDestination {
   needsVerification: boolean
 }
 
-/**
- * Normalize a free-text payer name to a stable key.
- *
- * "UnitedHealthcare", "United Healthcare" and "UNITED HEALTHCARE  " must find
- * the same PayerDestination row, or a biller who saved an address once is asked
- * for it again on the next import.
- */
-export function payerKey(name: string | null | undefined): string | null {
-  const trimmed = (name ?? '').trim().toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
-  return trimmed ? trimmed.replace(/\s+/g, '-') : null
-}
+/** Re-exported so every existing call site keeps its import. See payer-key.ts. */
+export { payerKey } from './payer-key'
 
 /**
  * National channel facts, keyed by the same families draft-response.ts matches.

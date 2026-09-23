@@ -3,6 +3,7 @@
 import { useEffect, useRef } from 'react'
 import { RotateCw, Sparkles, Loader2 } from 'lucide-react'
 import { useChat } from '@/components/layout/chat-context'
+import { trpc } from '@/lib/trpc/client'
 import { MarkdownMessage } from '@/components/layout/MarkdownMessage'
 import { ReasoningTrace } from './ReasoningTrace'
 
@@ -12,17 +13,35 @@ import { ReasoningTrace } from './ReasoningTrace'
  * about the same turn.
  */
 
+/**
+ * The first three ask about the queue itself and hold in any workspace.
+ *
+ * The fourth used to be "How is Aetna doing versus the rest?" — hardcoded. A
+ * workspace with no Aetna got an honest empty tool result and an answer saying
+ * there was no such data, which reads as the assistant refusing to help. It was
+ * the product suggesting a question it had already guaranteed would fail.
+ */
 const STARTERS = [
   'What should I work on first?',
   'Which denial reason is costing us the most?',
   'What expires in the next 7 days?',
-  'How is Aetna doing versus the rest?',
 ]
+
+/** Falls back to a payer-free comparison when the workspace has no denials yet. */
+function payerStarter(topPayer: string | null | undefined): string {
+  return topPayer
+    ? `How is ${topPayer} doing versus the rest?`
+    : 'Which payer denies the most of our claims?'
+}
 
 export function AgentConversation() {
   const {
     messages, isStreaming, retry, submit, isLoadingConversation,
   } = useChat()
+
+  // Only needed for the empty state, so a failure here costs a tailored
+  // suggestion and nothing else — the fallback question is always valid.
+  const starters = trpc.worklist.starters.useQuery(undefined, { retry: false })
 
   const bottomRef = useRef<HTMLDivElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -53,7 +72,7 @@ export function AgentConversation() {
           <span>Ask about this workspace&rsquo;s denials and A/R.</span>
         </div>
         <div className="space-y-1.5">
-          {STARTERS.map(starter => (
+          {[...STARTERS, payerStarter(starters.data?.topPayer)].map(starter => (
             <button
               key={starter}
               onClick={() => submit(starter)}

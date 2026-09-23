@@ -1,16 +1,24 @@
 import { z } from 'zod'
 import { TRPCError } from '@trpc/server'
 import { canReviewCodes, upgradeMessage } from '@/lib/plans'
-import { router, orgProcedure } from '../trpc'
+import { router, orgProcedure, practiceProcedure } from '../trpc'
 import { latestClaimsBatch } from '@/lib/insights/facts'
 import { anchorDate, bucketFor, daysBetween, outstanding } from '@/lib/insights/aggregate'
 import { daysLeft, filingWindow, lookupCarc, REMEDY_LABEL } from '@/lib/denials/triage'
 import { refineDenial } from '@/lib/denials/rarc'
 import { getPlaybook } from '@/lib/billing/denial-playbooks'
-import { buildClaimTimeline } from '@/lib/claims/timeline'
+import { buildClaimTimeline, lastHumanTouch } from '@/lib/claims/timeline'
 import { codeSignals, signalsHash, type ClaimCodeFact } from '@/lib/claims/code-signals'
-import { reviewClaim, ReviewUnavailableError } from '@/lib/claims/review-claim'
+import { reviewClaim, ReviewOffMapError, ReviewUnavailableError } from '@/lib/claims/review-claim'
 import { GEMINI_AVAILABLE } from '@/lib/ai/gemini-client'
+import { TYPESAFE_AVAILABLE } from '@/lib/ai/typesafe-client'
+import {
+  PREDICTED_REMEDY_LABEL,
+  buildPredictionState,
+  predictClaim,
+  predictionHash,
+  type Verdict,
+} from '@/lib/claims/predict'
 import { FACT_ROW_CAP } from '@/lib/insights/facts'
 import { money } from '@/lib/money'
 
@@ -128,12 +136,27 @@ async function loadCodeContext(
     throw new TRPCError({ code: 'NOT_FOUND', message: 'That claim is not in the current snapshot.' })
   }
 
+  /*
+    The population is taken from THIS CLAIM's practice, not from the switcher.
+
+    These rates are the evidence the code review is built on — "this CPT is paid
+    88% of the time for this payer". Judged against another clinic's book they
+    are a number about someone else's billing, presented as a fact about this
+    claim. The switcher is where the biller is looking; the claim's own practice
+    is what the comparison has to be against, and in combined mode those differ
+    for every row.
+
+    Null practiceId — a workspace with no practices, or a row imported before
+    they existed — means no narrowing, which is the behaviour this always had.
+  */
+  const practiceWhere = claim.practiceId ? { practiceId: claim.practiceId } : {}
+
   const [work, batch] = await Promise.all([
     ctx.prisma.claimWork.findUnique({
       where: { orgId_claimNumber: { orgId: ctx.orgId, claimNumber } },
     }),
     ctx.prisma.importBatch.findFirst({
-      where: { orgId: ctx.orgId, kind: 'CLAIMS' },
+      where: { orgId: ctx.orgId, ...practiceWhere, kind: 'CLAIMS' },
       orderBy: { createdAt: 'desc' },
       select: { id: true },
     }),
@@ -141,7 +164,7 @@ async function loadCodeContext(
 
   const population = batch
     ? await ctx.prisma.orgClaim.findMany({
-        where: { orgId: ctx.orgId, batchId: batch.id },
+        where: { orgId: ctx.orgId, ...practiceWhere, batchId: batch.id },
         select: {
           payer: true,
           cpt: true,
@@ -179,6 +202,99 @@ async function loadCodeContext(
   )
 
   return { claim, work, signals }
+}
+
+/**
+ * The facts a verdict depends on beyond the code signals.
+ *
+ * signalsHash fingerprints the codes, the payer and the history — everything
+ * the written review reasons from. The verdict also weighs the balance and how
+ * long is left to file, so those have to be in its key too, or a claim whose
+ * filing window has lapsed would go on serving "work this first" forever.
+ */
+function predictionFacts(
+  claim: {
+    status: import('@prisma/client').OrgClaimStatus
+    payer: string | null
+    carc: string | null
+    billed: import('@prisma/client').Prisma.Decimal
+    paid: import('@prisma/client').Prisma.Decimal | null
+    adjustment: import('@prisma/client').Prisma.Decimal | null
+    allowed: import('@prisma/client').Prisma.Decimal | null
+    serviceDate: Date | null
+    submittedDate: Date | null
+    remitDate: Date | null
+  },
+  work: {
+    statusOverride: import('@prisma/client').OrgClaimStatus | null
+    correctedCarc: string | null
+  } | null,
+) {
+  const today = new Date()
+  const status = work?.statusOverride ?? claim.status
+  const carcCode = work?.correctedCarc ?? claim.carc
+  const carc = carcCode ? lookupCarc(carcCode) : null
+  const playbook = carcCode ? getPlaybook(carcCode) : null
+
+  const facts = {
+    billed: money(claim.billed),
+    allowed: claim.allowed === null ? null : money(claim.allowed),
+    paid: claim.paid === null ? null : money(claim.paid),
+    adjustment: claim.adjustment === null ? null : money(claim.adjustment),
+    status,
+    serviceDate: claim.serviceDate,
+    submittedDate: claim.submittedDate,
+    remitDate: claim.remitDate,
+  }
+
+  const anchor = anchorDate(facts)
+  const denialAnchor = claim.remitDate ?? claim.serviceDate
+  const window = filingWindow(claim.payer ?? undefined)
+  const left =
+    carcCode && denialAnchor ? daysLeft(denialAnchor, claim.payer ?? undefined, today) : null
+
+  return {
+    status,
+    carc: carcCode,
+    balance: outstanding(facts),
+    ageDays: anchor ? daysBetween(anchor, today) : null,
+    /** Hoisted out of `filing` because predictionHash keys on it directly. */
+    daysLeft: left,
+    filing: { daysLeft: left, windowDays: window.days, windowSource: window.source },
+    denial: carcCode
+      ? {
+          code: carcCode,
+          label: carc?.label ?? null,
+          note: carc?.note ?? null,
+          playbookRemedy: carc ? REMEDY_LABEL[carc.remedy] : null,
+          payerPosition: playbook?.payerPosition ?? null,
+          strategy: playbook?.strategy ?? null,
+          avoid: playbook?.avoid ?? null,
+        }
+      : null,
+  }
+}
+
+/**
+ * A stored verdict, or nothing.
+ *
+ * A Json column's shape is not enforced by the database, so a verdict written
+ * by an older build must degrade to "no verdict" rather than throw inside a
+ * query that also has to return the free computed signals. The shape check is
+ * deliberately shallow — enough to know the UI can render it.
+ */
+function readVerdict(body: unknown): Verdict | null {
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) return null
+  const v = body as Record<string, unknown>
+  if (typeof v.model !== 'string' || typeof v.at !== 'string') return null
+  if (!Array.isArray(v.allowedCodes)) return null
+  for (const key of ['bestIcd10', 'denyAgain', 'worthIt', 'remedy']) {
+    const j = v[key]
+    if (typeof j !== 'object' || j === null || typeof (j as { asked?: unknown }).asked !== 'boolean') {
+      return null
+    }
+  }
+  return body as unknown as Verdict
 }
 
 export const claimsRouter = router({
@@ -254,12 +370,38 @@ export const claimsRouter = router({
           ? daysLeft(denialAnchor, claim.payer ?? undefined, today)
           : null
 
-      const timeline = buildClaimTimeline({
+      const entries = buildClaimTimeline({
         imported: { filename: claim.batch.filename, at: claim.batch.createdAt },
         events: work?.events ?? [],
         drafts: denialRow?.drafts ?? [],
         submissions: denialRow?.submissions ?? [],
       })
+
+      // Names, not ids — the same resolution worklist.history does, and for the
+      // same reason. This side never did it, so every actor the claim timeline
+      // carried was dropped on the floor by the renderer: the column exists,
+      // the events store it, and the dialog showed nothing. It matters more now
+      // that "who" is on the headline rather than buried in a list.
+      const actorIds = [...new Set(entries.map(e => e.actorId).filter((id): id is string => !!id))]
+      const actors = actorIds.length
+        ? await ctx.prisma.user.findMany({
+            where: { id: { in: actorIds }, orgId: ctx.orgId },
+            select: { id: true, name: true, email: true },
+          })
+        : []
+      const nameOf = new Map(
+        actors.map(a => [a.id, a.name?.trim() || a.email?.split('@')[0] || null]),
+      )
+
+      const timeline = entries.map(e => ({
+        at: e.at,
+        label: e.label,
+        detail: e.detail,
+        actor: e.actorId ? (nameOf.get(e.actorId) ?? null) : null,
+      }))
+
+      // The one clause of the history that belongs on the headline.
+      const touch = lastHumanTouch(entries)
 
       return {
         id: claim.id,
@@ -318,16 +460,27 @@ export const claimsRouter = router({
         worklistRowId: denialRow?.id ?? null,
         draftCount: denialRow?.drafts.length ?? 0,
         submissionCount: denialRow?.submissions.length ?? 0,
+
+        // Null when the import is the only thing that has ever happened. The
+        // headline says so in words rather than rendering an empty clause.
+        lastTouch: touch
+          ? {
+              at: touch.at,
+              label: touch.label,
+              kind: touch.kind as 'event' | 'draft' | 'submission',
+              actor: touch.actorId ? (nameOf.get(touch.actorId) ?? null) : null,
+            }
+          : null,
         timeline,
       }
     }),
 
   /** Distinct reason codes in the snapshot, for the claims table filter. */
-  carcNames: orgProcedure.query(async ({ ctx }) => {
-    const batch = await latestClaimsBatch(ctx.prisma, ctx.orgId)
+  carcNames: practiceProcedure.query(async ({ ctx }) => {
+    const batch = await latestClaimsBatch(ctx.prisma, ctx.orgId, ctx.practiceWhere)
     if (!batch) return []
     const rows = await ctx.prisma.orgClaim.findMany({
-      where: { orgId: ctx.orgId, batchId: batch.id, carc: { not: null } },
+      where: { orgId: ctx.orgId, ...ctx.practiceWhere, batchId: batch.id, carc: { not: null } },
       distinct: ['carc'],
       select: { carc: true },
       orderBy: { carc: 'asc' },
@@ -443,11 +596,17 @@ export const claimsRouter = router({
 
       if (changes.length === 0) return { success: true }
 
-      // A correction invalidates the cached review: it was reasoned from the
-      // codes that just changed.
+      // A correction invalidates both the verdict and the written reading of
+      // it: both were reasoned from the codes that just changed. Keeping one
+      // while discarding the other leaves a half-stale pair on screen that
+      // nobody can reason about.
       data.reviewBody = null
       data.reviewFactsHash = null
       data.reviewedAt = null
+      data.predictionBody = null
+      data.predictionFactsHash = null
+      data.predictionModel = null
+      data.predictedAt = null
 
       await recordWork(ctx, input.claimNumber, data, {
         kind: 'CODE_CORRECTED',
@@ -467,17 +626,126 @@ export const claimsRouter = router({
   signals: orgProcedure
     .input(z.object({ claimNumber: z.string().min(1) }))
     .query(async ({ ctx, input }) => {
-      const { signals, work } = await loadCodeContext(ctx, input.claimNumber)
+      const { claim, signals, work } = await loadCodeContext(ctx, input.claimNumber)
+      const facts = predictionFacts(claim, work)
+
       return {
         signals,
         available: GEMINI_AVAILABLE,
+        predictionAvailable: TYPESAFE_AVAILABLE,
         // Stale once the facts move, so the UI can offer a refresh rather than
         // showing conclusions drawn from codes that have since been corrected.
         cached:
           work?.reviewBody && work.reviewFactsHash === signalsHash(signals)
             ? { body: work.reviewBody, at: work.reviewedAt }
             : null,
+        // A verdict already paid for stays readable on any plan, for the same
+        // reason the written review does: what a plan buys is the model call,
+        // not the history of what it said.
+        verdict:
+          work?.predictionFactsHash === predictionHash(signals, facts)
+            ? readVerdict(work?.predictionBody)
+            : null,
       }
+    }),
+
+  /**
+   * The bounded verdict: four judgments over one shared state, in one call.
+   *
+   * Structurally the same as `review` below, and deliberately so — cache check,
+   * then the plan gate, then the call, then one transactional write. The
+   * difference is what comes back. A generative model is asked for prose and
+   * told in the prompt what it may not say; this one is handed a finite map of
+   * options built from this practice's own settled claims and returns a key
+   * from it. A code that is not in your history cannot come back, because there
+   * is nothing for it to come back as.
+   */
+  predict: orgProcedure
+    .input(z.object({ claimNumber: z.string().min(1) }))
+    .mutation(async ({ ctx, input }) => {
+      const [{ claim, work, signals }, org] = await Promise.all([
+        loadCodeContext(ctx, input.claimNumber),
+        ctx.prisma.organization.findUnique({
+          where: { id: ctx.orgId },
+          select: { plan: true },
+        }),
+      ])
+
+      const facts = predictionFacts(claim, work)
+      const hash = predictionHash(signals, facts)
+
+      const cached = readVerdict(work?.predictionBody)
+      if (cached && work?.predictionFactsHash === hash) {
+        return { verdict: cached, cached: true as const }
+      }
+
+      // Gated after the cache check, not before — a verdict already generated
+      // is already served free by claims.signals, so hiding it here would only
+      // be inconsistent. What a plan buys is the call.
+      if (!canReviewCodes(org?.plan ?? 'TRIAGE')) {
+        throw new TRPCError({
+          code: 'TOO_MANY_REQUESTS',
+          message: upgradeMessage('Predicting the codes on a claim is a paid feature.'),
+        })
+      }
+
+      if (!TYPESAFE_AVAILABLE) {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message:
+            'Claim prediction is not configured on this deployment. The figures above are computed and do not need it.',
+        })
+      }
+
+      const state = buildPredictionState({
+        signals,
+        status: facts.status,
+        billed: money(claim.billed),
+        allowed: claim.allowed === null ? null : money(claim.allowed),
+        paid: claim.paid === null ? null : money(claim.paid),
+        balance: facts.balance,
+        ageDays: facts.ageDays,
+        filing: facts.filing,
+        denial: facts.denial,
+      })
+
+      const result = await predictClaim(state)
+
+      if (!result.ok) {
+        if (result.reason === 'nothing-to-ask') {
+          // Not a failure: a settled claim with no balance and no reason code
+          // has nothing to judge. Say so rather than spending a call to be told.
+          return { verdict: null, cached: false as const, skipped: result.skipped }
+        }
+        throw new TRPCError({
+          code: 'BAD_GATEWAY',
+          message: 'The prediction service could not be reached. The computed figures are unaffected.',
+        })
+      }
+
+      const verdict = result.verdict
+
+      await recordWork(
+        ctx,
+        input.claimNumber,
+        {
+          predictionBody: verdict as unknown as import('@prisma/client').Prisma.InputJsonValue,
+          predictionFactsHash: hash,
+          predictionModel: verdict.model,
+          predictedAt: new Date(),
+        },
+        {
+          // Reuses REVIEWED rather than adding a PREDICTED enum member: one
+          // fewer ALTER TYPE, and lib/claims/timeline.ts falls back to the raw
+          // kind, so a distinct member can be added later at no risk.
+          kind: 'REVIEWED',
+          detail: verdict.remedy.asked
+            ? `Predicted from your payer history — ${PREDICTED_REMEDY_LABEL[verdict.remedy.choice]}`
+            : 'Predicted from your payer history',
+        },
+      )
+
+      return { verdict, cached: false as const }
     }),
 
   /**
@@ -521,10 +789,58 @@ export const claimsRouter = router({
       const billed = money(claim.billed)
       const paid = claim.paid === null ? null : money(claim.paid)
 
+      /*
+        One button, not two.
+
+        The prose is a reading of the verdict, so the review produces one if
+        none is cached rather than making it a second thing the biller has to
+        click. A written review generated with no verdict behind it is exactly
+        the failure mode this work exists to remove, and making it the default
+        path would invite it straight back.
+
+        When TypeSafe is unconfigured or the call fails, the review proceeds
+        with verdict: null and the prompt's no-verdict branch — which is the
+        behaviour this path has always had, now labelled rather than assumed.
+      */
+      const facts = predictionFacts(claim, work)
+      const predictionKey = predictionHash(signals, facts)
+      let verdict: Verdict | null =
+        work?.predictionFactsHash === predictionKey ? readVerdict(work?.predictionBody) : null
+
+      if (!verdict && TYPESAFE_AVAILABLE) {
+        const predicted = await predictClaim(
+          buildPredictionState({
+            signals,
+            status: facts.status,
+            billed,
+            allowed: claim.allowed === null ? null : money(claim.allowed),
+            paid,
+            balance: facts.balance,
+            ageDays: facts.ageDays,
+            filing: facts.filing,
+            denial: facts.denial,
+          }),
+        )
+        if (predicted.ok) {
+          verdict = predicted.verdict
+          await recordWork(
+            ctx,
+            input.claimNumber,
+            {
+              predictionBody: predicted.verdict as unknown as import('@prisma/client').Prisma.InputJsonValue,
+              predictionFactsHash: predictionKey,
+              predictionModel: predicted.verdict.model,
+              predictedAt: new Date(),
+            },
+            { kind: 'REVIEWED', detail: 'Predicted from your payer history' },
+          )
+        }
+      }
+
       let body: string
       try {
         body = await reviewClaim({
-          claimNumber: claim.claimNumber,
+          verdict,
           status: work?.statusOverride ?? claim.status,
           billed,
           paid,
@@ -552,6 +868,12 @@ export const claimsRouter = router({
       } catch (err) {
         if (err instanceof ReviewUnavailableError) {
           throw new TRPCError({ code: 'PRECONDITION_FAILED', message: err.message })
+        }
+        // Deliberately NOT cached. A body that named a code outside the
+        // verdict is wrong, and a wrong review served from cache for a month
+        // is how one bad suggestion becomes a habit.
+        if (err instanceof ReviewOffMapError) {
+          throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: err.message })
         }
         throw err
       }

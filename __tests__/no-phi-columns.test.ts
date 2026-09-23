@@ -30,6 +30,7 @@ const SCHEMA = readFileSync(join(__dirname, '..', 'prisma', 'schema.prisma'), 'u
  */
 const WORKSPACE_MODELS = [
   'Organization',
+  'Practice',
   'ImportBatch',
   'DenialRow',
   'DenialDraft',
@@ -39,9 +40,12 @@ const WORKSPACE_MODELS = [
   'OrgClaim',
   'ClaimWork',
   'ClaimEvent',
+  'DenialEvent',
+  'WorklistPreference',
   'ConnectionRequest',
   'AgentConversation',
   'AgentMessage',
+  'UsageEvent',
 ]
 
 /**
@@ -138,6 +142,23 @@ describe('no PHI columns in the denial workspace', () => {
     expect(message).toContain('trace')
     expect(message).not.toContain('patientName')
     expect(message).not.toContain('memberId')
+  })
+
+  it('UsageEvent counts what was done, never to which claim', () => {
+    // The telemetry table is the newest and most tempting place for this
+    // promise to quietly stop being true: "just add the claim id so we can see
+    // which ones people open" is a one-line change that turns a counter into a
+    // behavioural log joinable, through OrgClaim.claimNumber, to named people.
+    //
+    // The FORBIDDEN_FIELD guard above cannot catch it — `claimId` is not a
+    // patient identifier by itself — so the shape is asserted directly.
+    const fields = fieldsOf('UsageEvent')
+    expect(fields).toContain('orgId')
+    expect(fields).toContain('name')
+    expect(fields).not.toContain('claimId')
+    expect(fields).not.toContain('claimNumber')
+    expect(fields).not.toContain('rowId')
+    expect(fields).not.toContain('workId')
   })
 
   it('DenialSubmission records the attempt, not the person', () => {

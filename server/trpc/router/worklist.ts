@@ -1,13 +1,20 @@
 import { z } from 'zod'
 import { TRPCError } from '@trpc/server'
-import { router, orgProcedure } from '../trpc'
+import type { DenialEventKind } from '@prisma/client'
+import { router, orgProcedure, practiceProcedure } from '../trpc'
 import { triage, triageRow, type ClaimRow } from '@/lib/denials/triage'
-import { refineDenial } from '@/lib/denials/rarc'
 import { searchWhere } from '@/lib/denials/search'
-import { BANDS, callGuidance, scoreRow, type PriorityBand } from '@/lib/denials/score'
-import { payerOf, payerTurnaround } from '@/lib/insights/aggregate'
+import {
+  buildWorklistRow,
+  compareWorklistRows,
+  medianFor,
+} from '@/lib/denials/worklist-row'
+import { BANDS, scoreRow, type PriorityBand } from '@/lib/denials/score'
+import { loadPayerMedians } from '@/lib/denials/payer-medians'
 import { FACT_ROW_CAP } from '@/lib/insights/facts'
 import { draftResponseForRow } from '@/lib/denials/draft-response'
+import { writeNoteFromRough } from '@/lib/denials/write-note'
+import { standingContext } from '@/lib/denials/standing-context'
 import { artifactFor } from '@/lib/billing/appeal-prompt'
 import { getPlaybook } from '@/lib/billing/denial-playbooks'
 import {
@@ -17,7 +24,21 @@ import {
   resolveDestination,
 } from '@/lib/billing/submission'
 import { reviseAppealLetter } from '@/lib/billing/revise-appeal'
-import { SUBMISSION_OUTCOMES, rowStatusForOutcome } from '@/lib/denials/outcomes'
+/*
+  A server file importing lib/appeals/merge.ts will look, to the next reader,
+  exactly like the thing that file's header forbids. It is not. The warning there
+  is about merge.ts acquiring a server dependency — the merge itself moving onto
+  the server, which is what would put a patient's name in a request body. This is
+  the opposite direction: the server borrowing the browser's own definition of
+  which placeholders are a patient's, so that the rule enforced at the write and
+  the rule the biller is shown are literally the same code.
+*/
+import { droppedPatientSlots } from '@/lib/appeals/merge'
+import { practiceIdentity, PRACTICE_IDENTITY_SELECT } from '@/lib/practices/identity'
+import { loadPracticeNames } from '@/lib/practices/names'
+import { SUBMISSION_OUTCOMES, isWin, rowStatusForOutcome } from '@/lib/denials/outcomes'
+import { statusLabel } from '@/lib/denials/status'
+import { buildClaimTimeline, followUpCount } from '@/lib/claims/timeline'
 import { money } from '@/lib/money'
 import { draftAllowance, upgradeMessage } from '@/lib/plans'
 
@@ -63,43 +84,30 @@ type PersistedRow = {
 }
 
 /**
- * Each payer's median days to settle, from the most recent A/R snapshot.
+ * Each payer's median days to settle, memoised for this request.
  *
- * Used only for the call guidance on sent rows. A workspace with no claims
- * export gets an empty map and the guidance degrades to a labelled rule of
- * thumb rather than disappearing — see callGuidance in lib/denials/score.ts.
+ * The load itself is lib/denials/payer-medians.ts, shared with the export route
+ * so both agree on which A/R snapshot the medians come from. What stays here is
+ * only the memo: summary and rows both want this and arrive in the same batched
+ * request, so it must not be two queries.
  *
- * Selects the five columns the median actually needs. A worklist request has no
- * business loading every dollar column of an A/R snapshot.
+ * A workspace with no claims export gets an empty map and the call guidance
+ * degrades to a labelled rule of thumb rather than disappearing — see
+ * callGuidance in lib/denials/score.ts.
  */
 function payerMedians(ctx: {
   prisma: import('@prisma/client').PrismaClient
   orgId: string
   once: import('../context').Memo
+  practiceWhere: import('@/lib/practices/scope').PracticeWhere
+  practiceId: string | null
 }): Promise<Map<string, number>> {
-  // summary and rows both want this and arrive in the same batched request.
-  return ctx.once('worklist:payerMedians', async () => {
-    const batch = await ctx.prisma.importBatch.findFirst({
-      where: { orgId: ctx.orgId, kind: 'CLAIMS' },
-      orderBy: { createdAt: 'desc' },
-      select: { id: true },
-    })
-    if (!batch) return new Map<string, number>()
-
-    const claims = await ctx.prisma.orgClaim.findMany({
-      where: { orgId: ctx.orgId, batchId: batch.id },
-      select: {
-        payer: true,
-        status: true,
-        serviceDate: true,
-        submittedDate: true,
-        remitDate: true,
-      },
-      take: FACT_ROW_CAP,
-    })
-
-    return payerTurnaround(claims)
-  })
+  // Practice in the key, for the reason ../context.ts states: anything varying
+  // by input must put that input in the key. Without it the first query of a
+  // batched request fixes the scope for every later one.
+  return ctx.once(`worklist:payerMedians:${ctx.practiceId ?? 'all'}`, () =>
+    loadPayerMedians(ctx.prisma, ctx.orgId, ctx.practiceWhere),
+  )
 }
 
 function toClaimRow(row: PersistedRow): ClaimRow {
@@ -134,26 +142,68 @@ const PENDING_WORK = {
   followUpAt: z.coerce.date().nullish(),
 }
 
+/** yyyy-mm-dd, or "cleared" — what a FOLLOW_UP_SET event records. */
+function followUpDetail(date: Date | null): string {
+  return date ? date.toISOString().slice(0, 10) : 'cleared'
+}
+
+/**
+ * The events a note/follow-up write should leave behind.
+ *
+ * Built rather than written so every path that can change these two fields —
+ * setNote, setFollowUp, setStatus's passenger, and the implicit save inside
+ * draft/revise — records the same history. Before this, DenialRow.note was a
+ * single column that each save overwrote, so "what did we already try on this
+ * claim" was answerable only for the most recent attempt.
+ *
+ * Returns [] when nothing changed, so a no-op save does not litter the timeline.
+ * An empty note is still an event: erasing what the payer said is a thing that
+ * happened, and the text survives on the previous NOTE_ADDED row.
+ */
+function workEvents(
+  input: { note?: string; followUpAt?: Date | null },
+  actorId: string | null,
+): { kind: DenialEventKind; detail: string; actorId: string | null }[] {
+  const events: { kind: DenialEventKind; detail: string; actorId: string | null }[] = []
+  if (input.note !== undefined) {
+    events.push({ kind: 'NOTE_ADDED', detail: input.note.trim(), actorId })
+  }
+  if (input.followUpAt !== undefined) {
+    events.push({ kind: 'FOLLOW_UP_SET', detail: followUpDetail(input.followUpAt), actorId })
+  }
+  return events
+}
+
 /**
  * Write those edits, and hand back the row the document will be drafted from.
  *
  * Reads the row after the write rather than trusting the input, so the drafting
  * context is whatever is actually stored — the same thing the biller will see
  * when the dialog refetches.
+ *
+ * The update and its events go in one transaction: a note recorded without its
+ * history, or a history entry for a write that failed, are both worse than
+ * neither.
  */
 async function saveAndLoadRow(
   ctx: { prisma: import('@prisma/client').PrismaClient; orgId: string },
-  input: { rowId: string; note?: string; followUpAt?: Date | null },
+  input: { rowId: string; note?: string; followUpAt?: Date | null; actorId?: string | null },
 ) {
   if (input.note !== undefined || input.followUpAt !== undefined) {
-    await ctx.prisma.denialRow.updateMany({
-      where: { id: input.rowId, orgId: ctx.orgId },
-      data: {
-        ...(input.note === undefined ? {} : { note: input.note.trim() || null }),
-        ...(input.followUpAt === undefined ? {} : { followUpAt: input.followUpAt }),
-        lastTouchedAt: new Date(),
-      },
-    })
+    const events = workEvents(input, input.actorId ?? null)
+    await ctx.prisma.$transaction([
+      ctx.prisma.denialRow.updateMany({
+        where: { id: input.rowId, orgId: ctx.orgId },
+        data: {
+          ...(input.note === undefined ? {} : { note: input.note.trim() || null }),
+          ...(input.followUpAt === undefined ? {} : { followUpAt: input.followUpAt }),
+          lastTouchedAt: new Date(),
+        },
+      }),
+      ctx.prisma.denialEvent.createMany({
+        data: events.map(e => ({ ...e, orgId: ctx.orgId, rowId: input.rowId })),
+      }),
+    ])
   }
 
   const row = await ctx.prisma.denialRow.findFirst({
@@ -164,36 +214,75 @@ async function saveAndLoadRow(
 }
 
 /**
- * The same two facts, written for a model that is revising rather than drafting.
+ * When the note that is about to feed a draft was written.
  *
- * A revision only ever sees the letter and the instruction, so without this the
- * note is invisible to every version after the first. Returns null when there is
- * nothing to say, so the prompt omits the section rather than carrying a heading
- * over an empty body.
+ * The note itself lives on DenialRow and is overwritten on every save, so a
+ * version that says "drafted from your note" has no way to say *which* note
+ * unless the timestamp is captured at the moment of drafting. Reads the newest
+ * NOTE_ADDED event, which is the row the same save has just written.
+ *
+ * Null when there is no note: a draft built from nothing must not claim to have
+ * been built from something.
  */
-function standingContext(row: { note: string | null; followUpAt: Date | null }): string | null {
-  const parts: string[] = []
-  const note = row.note?.trim()
-  if (note) parts.push(`Note from the biller working this claim:\n${note}`)
-  if (row.followUpAt) {
-    parts.push(
-      `The practice intends to follow up on ${row.followUpAt.toISOString().slice(0, 10)}. ` +
-        `This is their own diary date, not a deadline the payer agreed to.`,
-    )
-  }
-  return parts.length ? parts.join('\n\n') : null
+async function noteWrittenAt(
+  ctx: { prisma: import('@prisma/client').PrismaClient; orgId: string },
+  rowId: string,
+  note: string | null,
+): Promise<Date | null> {
+  if (!note?.trim()) return null
+  const event = await ctx.prisma.denialEvent.findFirst({
+    where: { orgId: ctx.orgId, rowId, kind: 'NOTE_ADDED' },
+    orderBy: { createdAt: 'desc' },
+    select: { createdAt: true },
+  })
+  return event?.createdAt ?? null
+}
+
+/**
+ * The PHI boundary, enforced at the one write that can cross it.
+ *
+ * An editable letter body means a biller can select "[PATIENT NAME]", type
+ * "Jane Doe" and save — and that body is a server-owned column. Nothing can
+ * recognise a name, but the placeholder that stood there is measurably gone, and
+ * `droppedPatientSlots` is the same function the textarea runs on every
+ * keystroke. A biller who is blocked in the browser and a biller who posts
+ * straight to the API get the identical rule.
+ *
+ * Not a zod .superRefine, which was the shape originally planned: the body this
+ * has to be compared against is the previously stored version, which is in the
+ * database and not in the input. A refinement over a client-supplied "before"
+ * would be checking the edit against whatever the caller said it started from,
+ * which is no check at all.
+ */
+function assertNoPatientSlotLost(before: string, after: string) {
+  const dropped = droppedPatientSlots(before, after)
+  if (dropped.length === 0) return
+  throw new TRPCError({
+    code: 'BAD_REQUEST',
+    message:
+      'Patient details go in the fields below the letter, not in the letter — Yeam never ' +
+      `receives them. Put ${dropped.map(d => d.token).join(', ')} back and fill it in there.`,
+  })
 }
 
 export const worklistRouter = router({
-  /** The tiles, over every open row in the workspace. */
-  summary: orgProcedure.query(async ({ ctx }) => {
+  /**
+   * The tiles, over every open row in view.
+   *
+   * On practiceProcedure and not orgProcedure, which is the easy one to forget:
+   * this is a separate query from `rows`, so a practice filter applied to the
+   * table and not to the tiles gives a biller eleven rows under a tile that
+   * says forty — and the tile is the number they would repeat in a status
+   * meeting. All three reads below carry it.
+   */
+  summary: practiceProcedure.query(async ({ ctx }) => {
     const today = new Date()
 
     const [rows, settled, followUpsDue] = await Promise.all([
       // Capped, not paginated: the bands below are derived per row, so there is
       // no SQL predicate that could select "the interesting ones" up front.
       ctx.prisma.denialRow.findMany({
-        where: { orgId: ctx.orgId, status: { notIn: ['PAID', 'DEAD'] } },
+        where: { orgId: ctx.orgId, ...ctx.practiceWhere, status: { notIn: ['PAID', 'DEAD'] } },
         take: FACT_ROW_CAP,
       }),
       // Recovered money is the only number a customer will check against their
@@ -201,13 +290,14 @@ export const worklistRouter = router({
       // count are all this needs — it used to load every paid row to add them
       // up in JS, which grows without bound and forever.
       ctx.prisma.denialRow.aggregate({
-        where: { orgId: ctx.orgId, status: 'PAID' },
+        where: { orgId: ctx.orgId, ...ctx.practiceWhere, status: 'PAID' },
         _sum: { billed: true },
         _count: true,
       }),
       ctx.prisma.denialRow.count({
         where: {
           orgId: ctx.orgId,
+          ...ctx.practiceWhere,
           status: { notIn: ['PAID', 'DEAD'] },
           followUpAt: { lte: today },
         },
@@ -311,7 +401,7 @@ export const worklistRouter = router({
    * outgrows that, the fix is a materialised column refreshed nightly — not
    * storing the score.
    */
-  rows: orgProcedure
+  rows: practiceProcedure
     .input(
       z
         .object({
@@ -323,77 +413,204 @@ export const worklistRouter = router({
           // one they could not find in it.
           q: z.string().max(120).optional(),
           limit: z.number().min(1).max(500).default(100),
+          /**
+           * Only rows that have moved since this person last said they had seen
+           * the queue.
+           *
+           * Filtered here rather than in the client so the count above the
+           * table, the rows in it and the paging underneath are all talking
+           * about the same set. A client-side filter over the loaded page would
+           * say "7 changed" and then show four of them.
+           */
+          changedOnly: z.boolean().optional(),
+          /**
+           * Where the previous page stopped — the full sort tuple, not an offset.
+           *
+           * Offsets cannot work here. The ranking is derived on read from
+           * today's date, so between two requests a row can cross a deadline
+           * threshold, change score, and move: an offset would then skip one row
+           * and repeat another. A cursor naming the exact row the last page
+           * ended on survives that, because it is matched by identity.
+           */
+          cursor: z
+            .object({
+              score: z.number(),
+              daysLeft: z.number().nullable(),
+              billed: z.number(),
+              id: z.string(),
+            })
+            .nullish(),
         })
         .optional(),
     )
     .query(async ({ ctx, input }) => {
-      const [rows, medians] = await Promise.all([
+      const userId = ctx.session?.user?.id
+      const [rows, medians, pref, practiceNames] = await Promise.all([
         ctx.prisma.denialRow.findMany({
           where: {
             orgId: ctx.orgId,
+            ...ctx.practiceWhere,
             ...(input?.batchId ? { batchId: input.batchId } : {}),
             ...(input?.status ? { status: input.status } : {}),
             ...searchWhere(input?.q),
           },
-          include: { _count: { select: { drafts: true } } },
+          // An explicit select, not the whole row. This reads up to FACT_ROW_CAP
+          // (50,000) records to score them, so every column that comes back and
+          // is never used is paid for fifty thousand times.
+          //
+          // It also no longer carries `include: { _count: { drafts } }`, which
+          // was a correlated subquery per row — 50,000 of them to render 200.
+          // The count is fetched below, for the page that is actually returned.
+          select: {
+            id: true,
+            status: true,
+            note: true,
+            claimNumber: true,
+            payer: true,
+            carc: true,
+            billed: true,
+            denialDate: true,
+            cpt: true,
+            icd10: true,
+            reason: true,
+            lastTouchedAt: true,
+            reconciledAt: true,
+            followUpAt: true,
+            practiceId: true,
+          },
           take: FACT_ROW_CAP,
         }),
         payerMedians(ctx),
+        /*
+          When this person last said they had seen the queue.
+
+          Read here rather than accepted as an input. It could have been passed
+          from the client — it is already in the preference query the page runs —
+          but that would put it in the query key, and every "mark all seen" would
+          then re-run the scoring pass over the whole candidate set twice: once
+          to drop the count to zero, once when the key changed back. One indexed
+          lookup on a unique pair is cheaper than that.
+
+          ── Why this one read is allowed to fail ──────────────────────────────
+
+          Because it is the queue hanging off it. `rows` is the product's home
+          page, and the digest built on this value is a convenience on top of it:
+          a workspace that cannot read a preference row should see its denials
+          with no dots on them, not an empty table.
+
+          That is not hypothetical. `worklist_preferences` is one of the
+          migrations not yet applied to production (DEPLOY.md:148 — they go on by
+          hand), so shipping this coupled hard would have emptied the worklist for
+          every customer until the backlog landed. In development the same thing
+          happens to a dev server started before the migration: it holds a Prisma
+          Client with no `worklistPreference` on it and the property is undefined,
+          which is why this is a try/catch around an await rather than a
+          `.catch()` on the promise — there is no promise to attach to when the
+          delegate itself is missing.
+
+          Logged, not swallowed. A silent fallback here would hide a real outage
+          of the preferences table behind a feature quietly not working.
+        */
+        (async () => {
+          if (!userId) return null
+          try {
+            const row = await ctx.prisma.worklistPreference.findUnique({
+              where: { orgId_userId: { orgId: ctx.orgId, userId } },
+              select: { worklistSeenAt: true },
+            })
+            return row
+          } catch (err) {
+            console.error('worklist digest: preference read failed, digest off', err)
+            return null
+          }
+        })(),
+        // Memoized: `summary` and the export ask for the same map on the same
+        // batched request, and it is the same handful of rows every time.
+        ctx.once(`practiceNames:${ctx.orgId}`, () =>
+          loadPracticeNames(ctx.prisma, ctx.orgId),
+        ),
       ])
+      const seenAt = pref?.worklistSeenAt ?? null
 
       const today = new Date()
-      // triageRow() also returns `note` — the remedy guidance for this CARC.
-      // The biller's own note is kept separate rather than shadowing it.
-      const triaged = rows.map(row => {
-        const base = triageRow(toClaimRow(row), today)
-        return {
-          id: row.id,
-          status: row.status,
-          userNote: row.note,
-          draftCount: row._count.drafts,
-          ...base,
-          denialDate: row.denialDate,
-          lastTouchedAt: row.lastTouchedAt,
-          followUpAt: row.followUpAt,
-          // What the remittance actually said, where a vague CARC leaves the
-          // next step undetermined. Null is a real answer: nothing honest to add.
-          refinement: refineDenial({ carc: row.carc, reason: row.reason }),
-          ...scoreRow(
+      // Scored without draft counts: the count is not an input to the score, so
+      // fetching it for 50,000 rows to rank them would be work thrown away.
+      const triaged = rows
+        .map(row =>
+          buildWorklistRow(
+            { ...row, billed: money(row.billed) },
             {
-              billed: base.billed,
-              daysLeft: base.daysLeft,
-              actionable: base.actionable,
-              remedy: base.remedy,
-              denialDate: row.denialDate,
-              lastTouchedAt: row.lastTouchedAt,
-              followUpAt: row.followUpAt,
+              today,
+              payerMedianDaysToPay: medianFor(medians, row.payer),
+              draftCount: 0,
+              practiceNames,
             },
-            today,
           ),
-          call: callGuidance(
-            {
-              status: row.status,
-              lastTouchedAt: row.lastTouchedAt,
-              payerMedianDaysToPay: medians.get(payerOf(row.payer)) ?? null,
-            },
-            today,
-          ),
-        }
-      })
+        )
+        .sort(compareWorklistRows)
 
-      // Score first. Ties break on the deadline, then on money — so two rows
-      // that score alike still come out in a defensible order rather than
-      // whatever the database happened to return.
-      triaged.sort((a, b) => {
-        if (a.score !== b.score) return b.score - a.score
-        if (a.daysLeft === null && b.daysLeft === null) return b.billed - a.billed
-        if (a.daysLeft === null) return 1
-        if (b.daysLeft === null) return -1
-        if (a.daysLeft !== b.daysLeft) return a.daysLeft - b.daysLeft
-        return b.billed - a.billed
-      })
+      /*
+        What has moved since they last looked.
 
-      return triaged.slice(0, input?.limit ?? 100)
+        Counted over the whole candidate set, not the page, because "7 rows
+        changed" is a digest and a digest that only covers the first hundred rows
+        understates itself silently. It costs nothing extra: these rows are
+        already in memory to be scored.
+
+        Null seenAt means nobody has ever marked the queue seen, and then the
+        honest count is zero rather than "everything" — a badge on every row on
+        the first morning is noise, and noise is how a signal like this gets
+        trained out of a team.
+      */
+      const changed = seenAt
+        ? triaged.filter(r => r.changedAt !== null && r.changedAt > seenAt)
+        : []
+      const visible = input?.changedOnly ? changed : triaged
+
+      // Everything strictly after the cursor row in the sort order. findIndex on
+      // the id rather than on the tuple: the id is what makes the order total,
+      // and a row whose score moved since the last page is still the same row.
+      const from = input?.cursor
+        ? (() => {
+            const at = visible.findIndex(r => r.id === input.cursor!.id)
+            // A cursor row that has left the result set — filtered away, or
+            // reconciled by an import between pages — falls back to the tuple
+            // rather than restarting the list from the top.
+            if (at !== -1) return at + 1
+            const c = input.cursor!
+            const idx = visible.findIndex(r => compareWorklistRows(r, c) > 0)
+            return idx === -1 ? visible.length : idx
+          })()
+        : 0
+
+      const limit = input?.limit ?? 100
+      const page = visible.slice(from, from + limit)
+      const last = page[page.length - 1]
+      const nextCursor =
+        from + limit < visible.length && last
+          ? { score: last.score, daysLeft: last.daysLeft, billed: last.billed, id: last.id }
+          : null
+
+      // One grouped query for the page, instead of a subquery per candidate row.
+      const counts = page.length
+        ? await ctx.prisma.denialDraft.groupBy({
+            by: ['rowId'],
+            where: { orgId: ctx.orgId, rowId: { in: page.map(r => r.id) } },
+            _count: { _all: true },
+          })
+        : []
+      const draftCounts = new Map(counts.map(c => [c.rowId, c._count._all]))
+
+      return {
+        items: page.map(row => ({ ...row, draftCount: draftCounts.get(row.id) ?? 0 })),
+        nextCursor,
+        /** The whole result set, so the client can say how deep the queue is. */
+        total: visible.length,
+        /** How many rows have moved since this person last marked the queue seen. */
+        changedCount: changed.length,
+        /** Null until they mark it seen once — the digest stays off until then. */
+        seenAt,
+      }
     }),
 
   /**
@@ -404,12 +621,42 @@ export const worklistRouter = router({
    * export look like it has a worklist, and render an empty table instead of the
    * import box.
    */
-  batches: orgProcedure.query(async ({ ctx }) => {
+  batches: practiceProcedure.query(async ({ ctx }) => {
     return ctx.prisma.importBatch.findMany({
-      where: { orgId: ctx.orgId, kind: 'DENIALS' },
+      where: { orgId: ctx.orgId, ...ctx.practiceWhere, kind: 'DENIALS' },
       orderBy: { createdAt: 'desc' },
       take: 25,
     })
+  }),
+
+  /**
+   * The example questions the assistant offers before anyone has typed.
+   *
+   * Three of the four starters are workspace-agnostic and stay hardcoded in the
+   * client. The fourth named a payer — "How is Aetna doing versus the rest?" —
+   * which in a workspace with no Aetna sends the model to a tool that correctly
+   * returns nothing, and the model answers that there is no such data. That
+   * reads as the assistant refusing, and it was the most reproducible way to see
+   * it happen: a suggested question the product itself guaranteed would fail.
+   *
+   * Returns the payer carrying the most open denials, or null when the workspace
+   * is empty and the client should fall back to a question about no payer at all.
+   */
+  starters: practiceProcedure.query(async ({ ctx }) => {
+    const byPayer = await ctx.prisma.denialRow.groupBy({
+      by: ['payer'],
+      where: { orgId: ctx.orgId, ...ctx.practiceWhere, status: { notIn: ['PAID', 'DEAD'] } },
+      _count: { _all: true },
+      orderBy: { _count: { payer: 'desc' } },
+      take: 1,
+    })
+
+    // A blank payer is left as null rather than run through payerOf(): the
+    // label that function returns reads fine in a table and badly in a question,
+    // and "How is Unknown payer doing versus the rest?" is not worth suggesting.
+    const topPayer = byPayer[0]?.payer?.trim() || null
+
+    return { topPayer }
   }),
 
   /**
@@ -438,14 +685,40 @@ export const worklistRouter = router({
     .mutation(async ({ ctx, input }) => {
       // updateMany, not update: it takes orgId in the where clause, so a row id
       // belonging to another workspace matches nothing instead of being updated.
-      const result = await ctx.prisma.denialRow.updateMany({
-        where: { id: input.rowId, orgId: ctx.orgId },
-        data: {
-          status: input.status,
-          lastTouchedAt: new Date(),
-          ...(input.followUpAt === undefined ? {} : { followUpAt: input.followUpAt }),
-        },
-      })
+      const actorId = ctx.session?.user?.id ?? null
+      const [result] = await ctx.prisma.$transaction([
+        ctx.prisma.denialRow.updateMany({
+          where: { id: input.rowId, orgId: ctx.orgId },
+          data: {
+            status: input.status,
+            lastTouchedAt: new Date(),
+            ...(input.followUpAt === undefined ? {} : { followUpAt: input.followUpAt }),
+          },
+        }),
+        ctx.prisma.denialEvent.createMany({
+          data: [
+            {
+              orgId: ctx.orgId,
+              rowId: input.rowId,
+              kind: input.status === 'TO_WORK' ? 'REOPENED' : 'STATUS_CHANGED',
+              detail: statusLabel(input.status),
+              actorId,
+            },
+            // The date rides along on this mutation, so its history has to as
+            // well — otherwise a follow-up set while marking a row SENT would be
+            // the one change that left no trace.
+            ...(input.followUpAt === undefined
+              ? []
+              : [{
+                  orgId: ctx.orgId,
+                  rowId: input.rowId,
+                  kind: 'FOLLOW_UP_SET' as const,
+                  detail: followUpDetail(input.followUpAt),
+                  actorId,
+                }]),
+          ],
+        }),
+      ])
       if (result.count === 0) throw new TRPCError({ code: 'NOT_FOUND' })
       return { success: true }
     }),
@@ -463,10 +736,24 @@ export const worklistRouter = router({
     .input(z.object({ rowId: z.string(), note: z.string().max(2_000) }))
     .mutation(async ({ ctx, input }) => {
       const trimmed = input.note.trim()
-      const result = await ctx.prisma.denialRow.updateMany({
-        where: { id: input.rowId, orgId: ctx.orgId },
-        data: { note: trimmed || null, lastTouchedAt: new Date() },
-      })
+      const [result] = await ctx.prisma.$transaction([
+        ctx.prisma.denialRow.updateMany({
+          where: { id: input.rowId, orgId: ctx.orgId },
+          data: { note: trimmed || null, lastTouchedAt: new Date() },
+        }),
+        // The column holds the current note; this holds every note. Overwriting
+        // the column is still correct — draft-response.ts wants the latest — but
+        // it is no longer destructive, because the previous text is here.
+        ctx.prisma.denialEvent.createMany({
+          data: [{
+            orgId: ctx.orgId,
+            rowId: input.rowId,
+            kind: 'NOTE_ADDED',
+            detail: trimmed,
+            actorId: ctx.session?.user?.id ?? null,
+          }],
+        }),
+      ])
       if (result.count === 0) throw new TRPCError({ code: 'NOT_FOUND' })
       return { success: true }
     }),
@@ -488,12 +775,300 @@ export const worklistRouter = router({
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      const result = await ctx.prisma.denialRow.updateMany({
-        where: { id: input.rowId, orgId: ctx.orgId },
-        data: { followUpAt: input.followUpAt, lastTouchedAt: new Date() },
-      })
+      const [result] = await ctx.prisma.$transaction([
+        ctx.prisma.denialRow.updateMany({
+          where: { id: input.rowId, orgId: ctx.orgId },
+          data: { followUpAt: input.followUpAt, lastTouchedAt: new Date() },
+        }),
+        ctx.prisma.denialEvent.createMany({
+          data: [{
+            orgId: ctx.orgId,
+            rowId: input.rowId,
+            kind: 'FOLLOW_UP_SET',
+            detail: followUpDetail(input.followUpAt),
+            actorId: ctx.session?.user?.id ?? null,
+          }],
+        }),
+      ])
       if (result.count === 0) throw new TRPCError({ code: 'NOT_FOUND' })
       return { success: true }
+    }),
+
+  /**
+   * This person's layout, and where they were when they last left.
+   *
+   * Returns null rather than defaults when nothing has been chosen, so the
+   * client can tell "never set" from "set to the same value as the default" and
+   * keep reading its own constants.
+   */
+  preference: orgProcedure.query(async ({ ctx }) => {
+    const userId = ctx.session?.user?.id
+    if (!userId) return null
+    const row = await ctx.prisma.worklistPreference.findUnique({
+      where: { orgId_userId: { orgId: ctx.orgId, userId } },
+      select: {
+        columnWidths: true,
+        splitRatio: true,
+        lastRowId: true,
+        lastStep: true,
+        worklistSeenAt: true,
+        scratchRowId: true,
+        scratchBody: true,
+        scratchBaseVersion: true,
+        scratchAt: true,
+      },
+    })
+    if (!row) return null
+
+    // columnWidths is narrowed here rather than handed over as Prisma's
+    // JsonValue. That type is a deeply recursive union, and pushing it through
+    // tRPC's inference blows TypeScript's instantiation depth in the client —
+    // the same limit that forces components/worklist/types.ts to be written by
+    // hand. Narrowing at the boundary keeps the cost on this side of the wire.
+    return {
+      ...row,
+      columnWidths: (row.columnWidths ?? null) as Record<string, number> | null,
+    }
+  }),
+
+  /**
+   * Save part of it. Every field is optional; only what is sent is written.
+   *
+   * One mutation rather than four, because these are written from four unrelated
+   * gestures — dragging a divider, dragging a column, opening a row, scrolling
+   * the panel — and none of them should have to know about the others. `.strict()`
+   * so a field added to the client without a matching column here fails loudly
+   * rather than being silently dropped.
+   */
+  savePreference: orgProcedure
+    .input(
+      z
+        .object({
+          columnWidths: z.record(z.string(), z.number()).optional(),
+          splitRatio: z.number().min(0.2).max(0.9).optional(),
+          /** Null clears the resume pointer — "I am done with that row". */
+          lastRowId: z.string().nullish(),
+          /*
+            Which pane of the work panel to reopen on. The panel steps rather
+            than scrolls (lib/denials/panes.ts), and `outcome` was added when
+            the outcome form became a pane of its own. A String column, so rows
+            written before that still hold one of the first three — the client
+            validates what it reads rather than trusting it.
+          */
+          lastStep: z.enum(['note', 'draft', 'send', 'outcome']).nullish(),
+          worklistSeenAt: z.coerce.date().nullish(),
+        })
+        .strict(),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const userId = ctx.session?.user?.id
+      if (!userId) throw new TRPCError({ code: 'UNAUTHORIZED' })
+
+      // Only the keys actually sent, so saving a column width cannot blank the
+      // resume pointer by omission.
+      const data = {
+        ...(input.columnWidths === undefined ? {} : { columnWidths: input.columnWidths }),
+        ...(input.splitRatio === undefined ? {} : { splitRatio: input.splitRatio }),
+        ...(input.lastRowId === undefined ? {} : { lastRowId: input.lastRowId }),
+        ...(input.lastStep === undefined ? {} : { lastStep: input.lastStep }),
+        ...(input.worklistSeenAt === undefined ? {} : { worklistSeenAt: input.worklistSeenAt }),
+      }
+
+      await ctx.prisma.worklistPreference.upsert({
+        where: { orgId_userId: { orgId: ctx.orgId, userId } },
+        create: { orgId: ctx.orgId, userId, ...data },
+        update: data,
+      })
+      return { success: true }
+    }),
+
+  /**
+   * Park an uncommitted edit to a letter, or throw it away.
+   *
+   * The alternative was a debounced autosave writing a DenialDraft every couple
+   * of seconds, which destroys the one property the version list is for. This
+   * keeps the unsaved text somewhere durable without pretending it is a version:
+   * it is offered back as Restore or Discard the next time the claim is opened,
+   * and Save is still the only thing that writes history.
+   *
+   * Goes through the same patient-placeholder guard as `saveDraftBody`. A column
+   * that skipped it would be a way to put a name in Postgres by typing it and
+   * then never clicking Save — the likeliest version of that mistake, not the
+   * least.
+   *
+   * `body: null` discards. Deliberately not a separate mutation: discard and
+   * save race each other on the same four columns, and one write path means the
+   * last gesture wins instead of the last round-trip.
+   */
+  saveScratch: orgProcedure
+    .input(
+      z
+        .object({
+          rowId: z.string(),
+          body: z.string().max(40_000).nullable(),
+          baseVersion: z.number().int().positive(),
+        })
+        .strict(),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const userId = ctx.session?.user?.id
+      if (!userId) throw new TRPCError({ code: 'UNAUTHORIZED' })
+
+      if (input.body === null) {
+        await ctx.prisma.worklistPreference.updateMany({
+          where: { orgId: ctx.orgId, userId, scratchRowId: input.rowId },
+          data: { scratchRowId: null, scratchBody: null, scratchBaseVersion: null, scratchAt: null },
+        })
+        return { success: true }
+      }
+
+      const base = await ctx.prisma.denialDraft.findFirst({
+        where: { rowId: input.rowId, orgId: ctx.orgId, version: input.baseVersion },
+        select: { body: true },
+      })
+      if (!base) {
+        throw new TRPCError({
+          code: 'NOT_FOUND',
+          message: `There is no version ${input.baseVersion} of this letter.`,
+        })
+      }
+      assertNoPatientSlotLost(base.body, input.body)
+
+      const data = {
+        scratchRowId: input.rowId,
+        scratchBody: input.body,
+        scratchBaseVersion: input.baseVersion,
+        scratchAt: new Date(),
+      }
+      await ctx.prisma.worklistPreference.upsert({
+        where: { orgId_userId: { orgId: ctx.orgId, userId } },
+        create: { orgId: ctx.orgId, userId, ...data },
+        update: data,
+      })
+      // Deliberately does NOT stamp DenialRow.lastTouchedAt. Typing is not
+      // working a claim; committing the version is, and saveDraftBody stamps it.
+      return { success: true }
+    }),
+
+  /**
+   * Everything that has happened to this row, newest first.
+   *
+   * The note and the follow-up date are single columns that each save
+   * overwrites, which is right for "what does this row say now" and useless for
+   * "what have we already tried". A biller who called the payer twice had one
+   * sentence to show for it. This is the other half of that record.
+   *
+   * Actor names are resolved here rather than shipped as ids: a timeline that
+   * reads "by cm3k9x..." is not a timeline. One extra query for the handful of
+   * distinct people who touched one row.
+   */
+  history: orgProcedure
+    .input(z.object({ rowId: z.string() }))
+    .query(async ({ ctx, input }) => {
+      const events = await ctx.prisma.denialEvent.findMany({
+        where: { rowId: input.rowId, orgId: ctx.orgId },
+        orderBy: { createdAt: 'desc' },
+        take: 50,
+      })
+
+      const actorIds = [...new Set(events.map(e => e.actorId).filter((id): id is string => !!id))]
+      const actors = actorIds.length
+        ? await ctx.prisma.user.findMany({
+            // orgId in the where, like every other read here: a name is only
+            // ours to show if the person is in this workspace.
+            where: { id: { in: actorIds }, orgId: ctx.orgId },
+            select: { id: true, name: true, email: true },
+          })
+        : []
+      const nameOf = new Map(
+        actors.map(a => [a.id, a.name?.trim() || a.email?.split('@')[0] || null]),
+      )
+
+      return events.map(e => ({
+        id: e.id,
+        kind: e.kind,
+        detail: e.detail,
+        at: e.createdAt,
+        actor: e.actorId ? (nameOf.get(e.actorId) ?? null) : null,
+      }))
+    }),
+
+  /**
+   * The same row's history, merged with everything else that happened to it.
+   *
+   * `history` above is the raw event log, and the panel reads it that way on
+   * purpose — the prior notes and the origin of the follow-up date both need the
+   * event KIND, which a merged list has already flattened into a label.
+   *
+   * This is the other question: not "what did I write" but "what has been done
+   * to this claim, by anyone, in what order" — the import it arrived on, every
+   * event, every draft, every attempt at reaching the payer. It is answered by
+   * buildClaimTimeline, the same pure builder /claims uses, so the two pages
+   * cannot tell different stories about one claim.
+   */
+  timeline: orgProcedure
+    .input(z.object({ rowId: z.string() }))
+    .query(async ({ ctx, input }) => {
+      const row = await ctx.prisma.denialRow.findFirst({
+        where: { id: input.rowId, orgId: ctx.orgId },
+        select: {
+          batch: { select: { filename: true, createdAt: true } },
+          events: { orderBy: { createdAt: 'desc' }, take: 100 },
+          drafts: {
+            orderBy: { version: 'asc' },
+            select: { version: true, artifact: true, createdAt: true, source: true },
+          },
+          submissions: {
+            orderBy: { sentAt: 'desc' },
+            take: 20,
+            select: {
+              channel: true,
+              destination: true,
+              sentAt: true,
+              confirmationRef: true,
+              notes: true,
+            },
+          },
+        },
+      })
+      if (!row) throw new TRPCError({ code: 'NOT_FOUND' })
+
+      const entries = buildClaimTimeline({
+        imported: { filename: row.batch.filename, at: row.batch.createdAt },
+        events: row.events,
+        drafts: row.drafts,
+        submissions: row.submissions,
+      })
+
+      // Names, not ids, for the same reason `history` resolves them: a timeline
+      // that reads "by cm3k9x..." is not a timeline.
+      const actorIds = [...new Set(entries.map(e => e.actorId).filter((id): id is string => !!id))]
+      const actors = actorIds.length
+        ? await ctx.prisma.user.findMany({
+            where: { id: { in: actorIds }, orgId: ctx.orgId },
+            select: { id: true, name: true, email: true },
+          })
+        : []
+      const nameOf = new Map(
+        actors.map(a => [a.id, a.name?.trim() || a.email?.split('@')[0] || null]),
+      )
+
+      return {
+        entries: entries.map(e => ({
+          at: e.at,
+          kind: e.kind,
+          label: e.label,
+          detail: e.detail,
+          actor: e.actorId ? (nameOf.get(e.actorId) ?? null) : null,
+        })),
+        /**
+         * Attempts that actually reached the payer.
+         *
+         * Submissions, not drafts: a letter written four times and sent once is
+         * one follow-up. This is the number a biller wants before phoning.
+         */
+        followUps: followUpCount(row.submissions),
+      }
     }),
 
   /**
@@ -618,6 +1193,28 @@ export const worklistRouter = router({
           where: { id: input.rowId, orgId: ctx.orgId },
           data: { status: 'SENT', lastTouchedAt: new Date(), followUpAt },
         }),
+        // Both events, because this mutation genuinely does two things. The
+        // follow-up one matters most when the biller chose nothing and got the
+        // 30-day default: without it the date appears on the row with no author
+        // and no reason, which is indistinguishable from a bug.
+        ctx.prisma.denialEvent.createMany({
+          data: [
+            {
+              orgId: ctx.orgId,
+              rowId: input.rowId,
+              kind: 'STATUS_CHANGED' as const,
+              detail: statusLabel('SENT'),
+              actorId: ctx.session?.user?.id ?? null,
+            },
+            {
+              orgId: ctx.orgId,
+              rowId: input.rowId,
+              kind: 'FOLLOW_UP_SET' as const,
+              detail: followUpDetail(followUpAt),
+              actorId: ctx.session?.user?.id ?? null,
+            },
+          ],
+        }),
       ])
 
       return { submission }
@@ -707,11 +1304,19 @@ export const worklistRouter = router({
           data: {
             ...(nextStatus ? { status: nextStatus } : {}),
             lastTouchedAt: now,
-            // The follow-up existed to prompt exactly this. Recording the answer
-            // is what it was waiting for, so it clears — a row that came back
-            // denied re-enters the queue on its filing deadline, which is now
-            // much shorter, rather than on a date set before anyone knew.
-            followUpAt: null,
+            // The follow-up existed to prompt exactly this, so recording the
+            // answer clears it — but only when the answer ends the matter.
+            //
+            // This used to clear unconditionally, on the reasoning that a denied
+            // row re-enters the queue on its filing deadline. That deadline is
+            // for the ORIGINAL claim; the clock on a second-level appeal is a
+            // different and shorter one this product does not model. So the case
+            // the old comment described is precisely the case where the biller's
+            // own date was the only thing tracking the row — and it was the case
+            // that threw it away. Silence from the payer is the same story.
+            ...(isWin(input.outcome) || input.outcome === 'WITHDRAWN'
+              ? { followUpAt: null }
+              : {}),
           },
         }),
       ])
@@ -726,12 +1331,22 @@ export const worklistRouter = router({
    * visible somewhere a biller already looks rather than inferable from a
    * report nobody runs. Oldest first: the ones most likely to have been decided
    * weeks ago and forgotten.
+   *
+   * DenialSubmission carries no practiceId of its own — it is one appeal, and
+   * the practice is a property of the row it was sent for. So the scope is
+   * applied THROUGH the relation rather than denormalised onto a third table.
+   * That is a join, which the two big scans deliberately avoid, but this one is
+   * bounded at 25 pending submissions rather than 50,000 rows.
    */
-  awaitingOutcome: orgProcedure
+  awaitingOutcome: practiceProcedure
     .input(z.object({ limit: z.number().int().min(1).max(100).default(25) }).optional())
     .query(async ({ ctx, input }) => {
       const submissions = await ctx.prisma.denialSubmission.findMany({
-        where: { orgId: ctx.orgId, outcome: 'PENDING' },
+        where: {
+          orgId: ctx.orgId,
+          outcome: 'PENDING',
+          ...(ctx.practiceId ? { row: { practiceId: ctx.practiceId } } : {}),
+        },
         orderBy: { sentAt: 'asc' },
         take: input?.limit ?? 25,
         select: {
@@ -766,14 +1381,18 @@ export const worklistRouter = router({
     }),
 
   /**
-   * Follow-ups that have come due, across the whole workspace.
+   * Follow-ups that have come due, across everything in view.
    *
    * Answers "what did I promise to look at today" without scanning the queue.
+   * Scoped, because a biller working one clinic this morning is being asked
+   * what THEY promised — a follow-up on a row they cannot see and cannot open
+   * is not an answer to that question.
    */
-  dueFollowUps: orgProcedure.query(async ({ ctx }) => {
+  dueFollowUps: practiceProcedure.query(async ({ ctx }) => {
     const rows = await ctx.prisma.denialRow.findMany({
       where: {
         orgId: ctx.orgId,
+        ...ctx.practiceWhere,
         status: { notIn: ['PAID', 'DEAD'] },
         followUpAt: { lte: new Date() },
       },
@@ -809,34 +1428,51 @@ export const worklistRouter = router({
    * a denial ten times still bills once.
    */
   draft: orgProcedure
-    .input(z.object({ rowId: z.string(), ...PENDING_WORK }))
+    .input(
+      z.object({
+        rowId: z.string(),
+        /**
+         * What the biller asked for before this letter existed.
+         *
+         * `revise` could always steer a draft and `draft` could not, so the
+         * first letter was always the generic one and the biller's real
+         * preference arrived as a complaint about the output. Optional, and a
+         * blank one is dropped by the prompt builder.
+         */
+        instruction: z.string().max(2_000).optional(),
+        ...PENDING_WORK,
+      }),
+    )
     .mutation(async ({ ctx, input }) => {
       // The practice signs the letter, so it is loaded alongside the row. Without
       // it the model was left to guess at a signature block and did exactly that
       // — inventing a plausible practice name, which is worse than the
       // [PRACTICE NAME] placeholder because nobody catches it before it is sent.
-      const [row, practice, workedThisMonth] = await Promise.all([
-        saveAndLoadRow(ctx, input),
+      const [row, org, workedThisMonth] = await Promise.all([
+        saveAndLoadRow(ctx, { ...input, actorId: ctx.session?.user?.id ?? null }),
         ctx.prisma.organization.findUnique({
           where: { id: ctx.orgId },
-          select: {
-            plan: true,
-            practiceName: true,
-            npi: true,
-            tin: true,
-            addressLine1: true,
-            addressLine2: true,
-            city: true,
-            state: true,
-            postalCode: true,
-            contactName: true,
-            contactPhone: true,
-          },
+          select: { plan: true, ...PRACTICE_IDENTITY_SELECT },
         }),
         ctx.prisma.denialWorkedEvent.count({
           where: { orgId: ctx.orgId, createdAt: { gte: startOfMonth(new Date()) } },
         }),
       ])
+
+      // Which clinic signs THIS letter, which is the row's own practice — not
+      // whichever one the biller happens to have selected in the switcher. Those
+      // differ constantly: combined mode is the default, and a letter drafted
+      // there must still carry the right clinic's NPI. Loaded from the row
+      // rather than from ctx.practiceId for exactly that reason.
+      const rowPractice = row.practiceId
+        ? await ctx.prisma.practice.findFirst({
+            // orgId in the filter even though the row already carries it: the
+            // rule is that every query names the boundary.
+            where: { id: row.practiceId, orgId: ctx.orgId },
+            select: { name: true, ...PRACTICE_IDENTITY_SELECT },
+          })
+        : null
+      const practice = practiceIdentity(rowPractice, org)
 
       // The wall, checked here so a refused draft never spends a model call.
       //
@@ -844,7 +1480,7 @@ export const worklistRouter = router({
       // draftable, because the alternative is locking a biller out of the letter
       // they already spent the allowance on. DenialWorkedEvent is unique per
       // row, so redrafting one can never consume a second unit anyway.
-      const allowance = draftAllowance(practice?.plan ?? 'TRIAGE', workedThisMonth)
+      const allowance = draftAllowance(org?.plan ?? 'TRIAGE', workedThisMonth)
       if (allowance.atLimit) {
         const alreadyWorked = await ctx.prisma.denialWorkedEvent.findFirst({
           where: { rowId: row.id, orgId: ctx.orgId },
@@ -879,16 +1515,23 @@ export const worklistRouter = router({
           // these rather than needing to be argued into them afterwards.
           billerNote: row.note,
           followUpAt: row.followUpAt,
+          // Direction about the document, kept separate from the note all the
+          // way into the prompt — the note may not be read as an instruction and
+          // this may not be read as a fact.
+          draftingInstruction: input.instruction ?? null,
         },
         new Date(),
         practice,
       )
 
-      const latest = await ctx.prisma.denialDraft.findFirst({
-        where: { rowId: row.id, orgId: ctx.orgId },
-        orderBy: { version: 'desc' },
-        select: { version: true },
-      })
+      const [latest, noteAt] = await Promise.all([
+        ctx.prisma.denialDraft.findFirst({
+          where: { rowId: row.id, orgId: ctx.orgId },
+          orderBy: { version: 'desc' },
+          select: { version: true },
+        }),
+        noteWrittenAt(ctx, row.id, row.note),
+      ])
 
       const [draft] = await ctx.prisma.$transaction([
         ctx.prisma.denialDraft.create({
@@ -899,6 +1542,7 @@ export const worklistRouter = router({
             body: drafted.body,
             summary: JSON.stringify(drafted.summary),
             version: (latest?.version ?? 0) + 1,
+            noteAt,
           },
         }),
         ctx.prisma.denialRow.updateMany({
@@ -913,6 +1557,155 @@ export const worklistRouter = router({
       ])
 
       return { draft, artifactLabel: drafted.artifactLabel, summary: drafted.summary }
+    }),
+
+  /**
+   * Turn what the biller just said into the note they would have written.
+   *
+   * The note is the most valuable field in the product and the one people skip,
+   * because writing it happens straight off a forty-minute hold with the next
+   * call already queued. This is the mail-client bargain: the human supplies
+   * what they know — dictated in the browser, or typed as fragments — and the
+   * model supplies the sentence.
+   *
+   * RETURNS A PROPOSAL AND WRITES NOTHING. A model that saved into the note
+   * would be writing the field everything else trusts without anyone having read
+   * it, and `DenialRow.lastTouchedAt` would start to mean "a machine did
+   * something" — which distorts stalenessFactor and therefore the queue. Save
+   * stays `setNote`, and stays the biller's act.
+   *
+   * Walled exactly like `draft`: a workspace at its limit can still write notes
+   * on denials it has already worked, and cannot start a new one. The wall says
+   * "everything already here stays open", and this is the only other model call
+   * a row can reach.
+   */
+  writeNote: orgProcedure
+    .input(z.object({ rowId: z.string(), rough: z.string().min(1).max(4_000) }).strict())
+    .mutation(async ({ ctx, input }) => {
+      const [row, org, workedThisMonth] = await Promise.all([
+        ctx.prisma.denialRow.findFirst({
+          where: { id: input.rowId, orgId: ctx.orgId },
+          select: { claimNumber: true, payer: true, carc: true, reason: true },
+        }),
+        ctx.prisma.organization.findUnique({
+          where: { id: ctx.orgId },
+          select: { plan: true },
+        }),
+        ctx.prisma.denialWorkedEvent.count({
+          where: { orgId: ctx.orgId, createdAt: { gte: startOfMonth(new Date()) } },
+        }),
+      ])
+      if (!row) throw new TRPCError({ code: 'NOT_FOUND' })
+
+      const allowance = draftAllowance(org?.plan ?? 'TRIAGE', workedThisMonth)
+      if (allowance.atLimit) {
+        const alreadyWorked = await ctx.prisma.denialWorkedEvent.findFirst({
+          where: { rowId: input.rowId, orgId: ctx.orgId },
+          select: { id: true },
+        })
+        if (!alreadyWorked) {
+          throw new TRPCError({
+            code: 'TOO_MANY_REQUESTS',
+            message: upgradeMessage(
+              `This workspace has worked all ${allowance.limit} of its denials this month.`,
+            ),
+          })
+        }
+      }
+
+      return { note: await writeNoteFromRough(input.rough, row) }
+    }),
+
+  /**
+   * The biller's own edit to the letter, committed as a version.
+   *
+   * Appends rather than overwrites, exactly as `revise` does, so a biller's
+   * rewrite and a model's revision interleave in one linear history and `source`
+   * is what tells them apart. That is also why there is no autosave behind this:
+   * a row every two seconds would bury the version somebody actually wants to go
+   * back to. Unsaved keystrokes live in `saveScratch` instead.
+   *
+   * `baseVersion` is the version the text on screen was derived from. It is what
+   * the PHI guard diffs against — the stored body, not one the caller supplied —
+   * and it is how the answer can say a newer version arrived while this one was
+   * being typed. It is not a lock: the table is append-only, so a save landing on
+   * top of a revision loses nothing, and refusing the write would strand the
+   * biller with edits and nowhere to put them.
+   */
+  saveDraftBody: orgProcedure
+    .input(
+      z
+        .object({
+          rowId: z.string(),
+          body: z.string().min(1).max(40_000),
+          baseVersion: z.number().int().positive(),
+        })
+        .strict(),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const drafts = await ctx.prisma.denialDraft.findMany({
+        where: { rowId: input.rowId, orgId: ctx.orgId },
+        orderBy: { version: 'asc' },
+        select: { id: true, version: true, body: true, artifact: true, summary: true },
+      })
+      const latest = drafts[drafts.length - 1]
+      if (!latest) throw new TRPCError({ code: 'NOT_FOUND', message: 'Draft this denial first.' })
+
+      const base = drafts.find(d => d.version === input.baseVersion)
+      if (!base) {
+        throw new TRPCError({
+          code: 'NOT_FOUND',
+          message: `There is no version ${input.baseVersion} of this letter.`,
+        })
+      }
+
+      assertNoPatientSlotLost(base.body, input.body)
+
+      // Unchanged text is not a version. Clicking Save twice, or blurring a
+      // field nobody touched, must not add a v6 identical to v5.
+      if (input.body.trim() === latest.body.trim()) {
+        return { draft: latest, basedOn: latest.version, supersededBy: null as number | null }
+      }
+
+      const [draft] = await ctx.prisma.$transaction([
+        ctx.prisma.denialDraft.create({
+          data: {
+            orgId: ctx.orgId,
+            rowId: input.rowId,
+            // The instrument does not change because the wording did. A biller
+            // editing a corrected claim is still working on a corrected claim.
+            artifact: base.artifact,
+            summary: base.summary,
+            body: input.body,
+            version: latest.version + 1,
+            source: 'BILLER',
+          },
+        }),
+        // A person rewrote the letter, so the row was genuinely touched — this
+        // is the one kind of write that is allowed to move lastTouchedAt, and
+        // staleness in the priority score would otherwise keep climbing while
+        // somebody was working the claim.
+        ctx.prisma.denialRow.updateMany({
+          where: { id: input.rowId, orgId: ctx.orgId },
+          data: { lastTouchedAt: new Date() },
+        }),
+      ])
+
+      // The scratch existed to survive an uncommitted edit. This is the commit.
+      const userId = ctx.session?.user?.id
+      if (userId) {
+        await ctx.prisma.worklistPreference.updateMany({
+          where: { orgId: ctx.orgId, userId, scratchRowId: input.rowId },
+          data: { scratchRowId: null, scratchBody: null, scratchBaseVersion: null, scratchAt: null },
+        })
+      }
+
+      return {
+        draft,
+        basedOn: input.baseVersion,
+        /** Non-null when a version arrived while this edit was being typed. */
+        supersededBy: latest.version === input.baseVersion ? null : latest.version,
+      }
     }),
 
   /**
@@ -932,7 +1725,7 @@ export const worklistRouter = router({
     )
     .mutation(async ({ ctx, input }) => {
       const [row, drafts] = await Promise.all([
-        saveAndLoadRow(ctx, input),
+        saveAndLoadRow(ctx, { ...input, actorId: ctx.session?.user?.id ?? null }),
         ctx.prisma.denialDraft.findMany({
           where: { rowId: input.rowId, orgId: ctx.orgId },
           orderBy: { version: 'asc' },
@@ -959,6 +1752,10 @@ export const worklistRouter = router({
           body: revised.letter,
           summary: current.summary,
           version: current.version + 1,
+          // Carried on every revision, not just the first. standingContext put
+          // the note in this prompt too, so this version was drafted from it as
+          // much as version 1 was.
+          noteAt: await noteWrittenAt(ctx, input.rowId, row.note),
         },
       })
 

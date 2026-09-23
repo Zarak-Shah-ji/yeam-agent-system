@@ -1,5 +1,6 @@
 'use client'
 
+import { useState } from 'react'
 import Link from 'next/link'
 import { AlertTriangle, ShieldCheck } from 'lucide-react'
 import { trpc } from '@/lib/trpc/client'
@@ -14,6 +15,7 @@ import { ViewToggle, useAnalyticsView } from '@/components/charts/ViewToggle'
 import { ordinalSteps, useChartTheme } from '@/lib/charts/theme'
 import { monthLabel, pct, usd, usdCompact } from '@/lib/charts/format'
 import { AgingChart } from './AgingChart'
+import { CodeClaimsDialog } from './CodeClaimsDialog'
 import { AppealOutcomes } from './AppealOutcomes'
 import { EmptyCard } from './EmptyCard'
 import { NoWorkspace, isNoWorkspace } from './NoWorkspace'
@@ -87,6 +89,14 @@ export function InsightsView() {
 
   const [view, setView] = useAnalyticsView()
   const theme = useChartTheme()
+  /**
+   * Which procedure code the reader has opened, if any.
+   *
+   * Local rather than in the URL, unlike the claims table: this is a glance at
+   * an aggregate on the way to the claims page, not a view worth sharing a link
+   * to. The link worth sharing is the one the dialog hands off to.
+   */
+  const [openCode, setOpenCode] = useState<string | null>(null)
 
   if (isNoWorkspace(overview.error)) return <NoWorkspace />
 
@@ -116,6 +126,12 @@ export function InsightsView() {
     .filter(m => m.denialRate !== null)
     .map(m => ({ date: monthLabel(m.month), rate: m.denialRate as number }))
   const denialCounts = denialMonths.map(m => ({ date: monthLabel(m.month), denied: m.denied }))
+
+  // Sorted here, once, so both renderings agree. topCarcs picks its top ten by
+  // total billed but this card plots what is still at stake, and RankedBar
+  // re-ranks by the value it is given — so the Numbers table used to list the
+  // same ten rows in a visibly different order from the chart beside it.
+  const rankedCarcs = [...(carcs.data ?? [])].sort((a, b) => b.atStake - a.atStake)
 
   const recoveryStages = recovery.data?.stages ?? []
   const stageFills = ordinalSteps(theme, recoveryStages.length)
@@ -245,7 +261,9 @@ export function InsightsView() {
             <CardTitle className="text-base">Outstanding A/R by age</CardTitle>
           </CardHeader>
           <CardContent>
-            {aging.data && aging.data.total > 0 ? (
+            {aging.isLoading ? (
+              <Skeleton className="h-64 w-full" />
+            ) : aging.data && aging.data.total > 0 ? (
               <>
                 {view === 'chart' ? (
                   <AgingChart data={aging.data.buckets} />
@@ -256,6 +274,7 @@ export function InsightsView() {
                         <TableHead>Age</TableHead>
                         <TableHead className="text-right">Outstanding</TableHead>
                         <TableHead className="text-right">Claims</TableHead>
+                        <TableHead className="text-right">Avg age</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -264,6 +283,24 @@ export function InsightsView() {
                           <TableCell>{bucket.bucket} days</TableCell>
                           <TableCell className="text-right tabular-nums">{usd(bucket.amount)}</TableCell>
                           <TableCell className="text-right tabular-nums">{bucket.count}</TableCell>
+                          {/* The band says 91-120; this says the claims in it
+                              average 104 days and the oldest is past a year.
+                              An empty bucket shows a dash, never 0d. */}
+                          <TableCell className="text-right tabular-nums">
+                            {bucket.avgDays === null ? (
+                              <span className="text-gray-400">—</span>
+                            ) : (
+                              <>
+                                {bucket.avgDays}d
+                                {bucket.oldestDays !== null &&
+                                  bucket.oldestDays !== bucket.avgDays && (
+                                    <span className="ml-1 text-xs text-gray-400">
+                                      oldest {bucket.oldestDays}d
+                                    </span>
+                                  )}
+                              </>
+                            )}
+                          </TableCell>
                         </TableRow>
                       ))}
                     </TableBody>
@@ -361,44 +398,68 @@ export function InsightsView() {
             <CardTitle className="text-base">Why claims are being denied</CardTitle>
           </CardHeader>
           <CardContent>
-            {(carcs.data?.length ?? 0) > 0 ? (
+            {carcs.isLoading ? (
+              <Skeleton className="h-64 w-full" />
+            ) : rankedCarcs.length > 0 ? (
               view === 'chart' ? (
                 <RankedBar
                   // Ranked by money, not by count — ten cheap denials matter
                   // less than one expensive one, and the table sorts the same way.
-                  data={carcs.data!.map(row => ({
+                  //
+                  // The axis carries the code alone. It used to carry
+                  // "CO-97 · <the whole reason>" inside a 27-character budget,
+                  // which meant every label read "CO-97 · Payment adjusted be…"
+                  // and the reason was unreachable in this view. A code never
+                  // truncates; the sentence goes in the tooltip, where there is
+                  // room for it.
+                  data={rankedCarcs.map(row => ({
                     key: row.carc,
-                    label: `${row.carc} · ${row.label}`,
+                    label: row.carc,
                     value: row.atStake,
                     note: `${row.count} denials · ${row.remedyLabel}`,
+                    detail: `${row.label}. ${row.note}`,
                   }))}
                   format={usdCompact}
-                  labelWidth={190}
+                  labelWidth={72}
                 />
               ) : (
-                <Table>
+                /* Fixed layout so the reason column keeps the width given to
+                   it. Under auto layout a long sentence widens its own column
+                   until the money is squeezed off the edge, and max-width on a
+                   cell does not reliably stop it. */
+                <Table className="table-fixed">
                   <TableHeader>
                     <TableRow>
+                      {/* Wide enough for the longest value canonicalCarc can
+                          emit, which is the literal "UNKNOWN", not a code. */}
                       <TableHead className="w-20">Code</TableHead>
                       <TableHead>Reason</TableHead>
-                      <TableHead>Needs</TableHead>
-                      <TableHead className="text-right">At stake</TableHead>
+                      <TableHead className="w-28">Needs</TableHead>
+                      <TableHead className="w-24 text-right">At stake</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {carcs.data!.map(row => (
+                    {rankedCarcs.map(row => (
                       <TableRow key={row.carc}>
-                        <TableCell className="font-mono text-xs">{row.carc}</TableCell>
-                        <TableCell className="max-w-[16rem] truncate text-sm" title={row.label}>
-                          {row.label}
+                        <TableCell className="align-top font-mono text-xs">{row.carc}</TableCell>
+                        {/* Wraps to as many lines as it needs. This used to be
+                            truncated to one line with the full text hidden
+                            behind a title attribute, which is not a place
+                            anyone reads. */}
+                        <TableCell className="align-top text-sm whitespace-normal">
+                          <span className="text-gray-900">{row.label}</span>
                           <span className="ml-1 text-gray-400">×{row.count}</span>
+                          {/* What to do about it — the half a biller acts on. */}
+                          <span className="mt-0.5 block text-xs text-gray-500">{row.note}</span>
                         </TableCell>
-                        <TableCell>
+                        <TableCell className="align-top">
                           <Badge variant={REMEDY_VARIANT[row.remedy] ?? 'secondary'}>
                             {row.remedyLabel}
                           </Badge>
                         </TableCell>
-                        <TableCell className="text-right tabular-nums">{usd(row.atStake)}</TableCell>
+                        <TableCell className="align-top text-right tabular-nums">
+                          {usd(row.atStake)}
+                        </TableCell>
                       </TableRow>
                     ))}
                   </TableBody>
@@ -458,7 +519,8 @@ export function InsightsView() {
                 )}
                 <p className="pt-2 text-sm text-gray-600">
                   {usd(recovery.data.recovered)} recovered across{' '}
-                  {recovery.data.recoveredCount} denials.
+                  {recovery.data.recoveredCount}{' '}
+                  {recovery.data.recoveredCount === 1 ? 'denial' : 'denials'}.
                 </p>
               </div>
             ) : (
@@ -482,36 +544,58 @@ export function InsightsView() {
             <CardTitle className="text-base">Procedures losing the most money</CardTitle>
           </CardHeader>
           <CardContent>
-            {(codes.data?.cpt.length ?? 0) > 0 ? (
+            {codes.isLoading ? (
+              <Skeleton className="h-64 w-full" />
+            ) : (codes.data?.cpt.length ?? 0) > 0 ? (
               view === 'chart' ? (
                 <RankedBar
                   data={codes.data!.cpt.map(row => ({
                     key: row.code,
                     label: row.code,
                     value: row.deniedBilled,
-                    note: row.description ?? `${row.deniedCount} denied`,
+                    // Never silently swaps meaning: the count rides along
+                    // whether or not the code has a description.
+                    note: `${row.deniedCount} denied`,
+                    detail: row.description ?? undefined,
                   }))}
                   format={usdCompact}
                   labelWidth={72}
+                  onSelect={setOpenCode}
                 />
               ) : (
-                <Table>
+                <Table className="table-fixed">
                   <TableHeader>
                     <TableRow>
-                      <TableHead className="w-24">CPT</TableHead>
+                      <TableHead className="w-20">CPT</TableHead>
                       <TableHead>Description</TableHead>
-                      <TableHead className="text-right">Denied</TableHead>
+                      <TableHead className="w-32 text-right">Denied</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {codes.data!.cpt.map(row => (
-                      <TableRow key={row.code}>
-                        <TableCell className="font-mono text-xs">{row.code}</TableCell>
-                        <TableCell className="max-w-[18rem] truncate text-sm text-gray-600">
+                      <TableRow
+                        key={row.code}
+                        tabIndex={0}
+                        role="button"
+                        aria-label={`Show denied claims for ${row.code}`}
+                        className="cursor-pointer hover:bg-gray-50"
+                        onClick={() => setOpenCode(row.code)}
+                        onKeyDown={e => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault()
+                            setOpenCode(row.code)
+                          }
+                        }}
+                      >
+                        <TableCell className="align-top font-mono text-xs">{row.code}</TableCell>
+                        {/* Wraps rather than truncating — and this cell did not
+                            even carry a title attribute, so a clipped
+                            description had no way to be read at all. */}
+                        <TableCell className="align-top text-sm whitespace-normal text-gray-600">
                           {/* Blank, not the code echoed back at itself. */}
                           {row.description ?? <span className="text-gray-400">—</span>}
                         </TableCell>
-                        <TableCell className="text-right tabular-nums">
+                        <TableCell className="align-top text-right tabular-nums">
                           {usd(row.deniedBilled)}
                           <span className="ml-1 text-xs text-gray-400">×{row.deniedCount}</span>
                         </TableCell>
@@ -569,6 +653,12 @@ export function InsightsView() {
           </CardContent>
         </Card>
       </div>
+
+      <CodeClaimsDialog
+        code={openCode}
+        open={openCode !== null}
+        onOpenChange={open => !open && setOpenCode(null)}
+      />
 
       <p className="flex items-center gap-1.5 text-xs text-gray-400">
         <ShieldCheck className="h-3.5 w-3.5" aria-hidden="true" />

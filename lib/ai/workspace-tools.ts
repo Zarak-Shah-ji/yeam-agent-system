@@ -1,5 +1,6 @@
 import { SchemaType, type FunctionDeclarationsTool } from '@google/generative-ai'
 import type { PrismaClient } from '@prisma/client'
+import type { PracticeWhere } from '@/lib/practices/scope'
 import { loadFacts } from '@/lib/insights/facts'
 import { overview, payerScorecard, topCarcs, payerOf } from '@/lib/insights/aggregate'
 import { triageRow, type ClaimRow } from '@/lib/denials/triage'
@@ -110,18 +111,23 @@ function clampLimit(raw: unknown, fallback = 10): number {
  * Run one tool call against one workspace.
  *
  * `orgId` comes from the caller's session, never from `args` — see the header.
+ * So does `practiceWhere`, and for the same reason: the model must not be able
+ * to widen its own view by asking about a clinic. It answers about what the
+ * biller is looking at, so that "how many open denials do we have" agrees with
+ * the number on the tile beside the chat.
  */
 export async function executeWorkspaceTool(
   prisma: PrismaClient,
   orgId: string,
   name: string,
   args: Record<string, unknown>,
+  practiceWhere: PracticeWhere = {},
 ): Promise<Record<string, unknown>> {
   const today = new Date()
 
   switch (name) {
     case 'workspace_overview': {
-      const { claims, denials, statusDerived, batch, truncated } = await loadFacts(prisma, orgId)
+      const { claims, denials, statusDerived, batch, truncated } = await loadFacts(prisma, orgId, practiceWhere)
       return {
         ...overview(claims, denials, today, { statusDerived }),
         snapshotFilename: batch?.filename ?? null,
@@ -132,7 +138,7 @@ export async function executeWorkspaceTool(
     }
 
     case 'top_denial_reasons': {
-      const { denials } = await loadFacts(prisma, orgId)
+      const { denials } = await loadFacts(prisma, orgId, practiceWhere)
       if (denials.length === 0) {
         return { reasons: [], note: 'This workspace has no denials imported yet.' }
       }
@@ -140,7 +146,7 @@ export async function executeWorkspaceTool(
     }
 
     case 'worklist_rows': {
-      const { denials, claims } = await loadFacts(prisma, orgId)
+      const { denials, claims } = await loadFacts(prisma, orgId, practiceWhere)
 
       const wanted = typeof args.payer === 'string' ? payerOf(args.payer).toLowerCase() : null
       const byPayer = wanted

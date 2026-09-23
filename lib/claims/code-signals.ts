@@ -26,6 +26,7 @@
  */
 
 import { describeIcd, isKnownProcedure, profileFor } from '@/lib/billing/procedure-codes'
+import { MIN_SAMPLE } from '@/lib/stats/min-sample'
 
 /** The columns of an OrgClaim this reasons over. */
 export type ClaimCodeFact = {
@@ -39,11 +40,8 @@ export type ClaimCodeFact = {
   carc: string | null
 }
 
-/**
- * Below this, a rate is noise. Five is not a statistical threshold — it is the
- * point below which quoting a percentage to a biller is actively misleading.
- */
-export const MIN_SAMPLE = 5
+/** Re-exported from its own module; see lib/stats/min-sample.ts. */
+export { MIN_SAMPLE }
 
 /** Which population a statistic was drawn from, so the UI can say. */
 export type StatScope = 'payer+cpt' | 'cpt' | 'payer'

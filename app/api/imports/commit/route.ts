@@ -96,12 +96,58 @@ async function applyOutcomes(
       }),
       prisma.denialRow.updateMany({
         where: { id: p.rowId, orgId },
-        data: { status: 'PAID', lastTouchedAt: now, followUpAt: null },
+        // reconciledAt, not lastTouchedAt. This runs from an import, and
+        // lastTouchedAt means a human did something (see the schema comment on
+        // the column, and stalenessFactor in lib/denials/score.ts). Stamping it
+        // here told the priority score every reconciled row had just been
+        // handled, so a workspace that imports monthly had its staleness signal
+        // reset on exactly the rows it had stopped working.
+        //
+        // followUpAt is left alone for the same reason: a background import must
+        // not throw away a date a biller chose. The row is closing as PAID, so
+        // nothing will chase it anyway — and if the reconciliation is wrong, the
+        // date they set is what they need back.
+        data: { status: 'PAID', reconciledAt: now },
       }),
     ]),
   )
 
   return proposals.length
+}
+
+/**
+ * The practice a batch is filed under: chosen, verified, or defaulted.
+ *
+ * Separated from the handler because "verify it belongs to this org" is the
+ * whole of it, and burying that inline next to a 200-line create() is how it
+ * gets dropped in a later edit.
+ *
+ * An archived practice is still accepted when named explicitly. Archiving stops
+ * a clinic appearing in the picker; it does not mean a file already being
+ * uploaded for it should land somewhere else. The default, by contrast, is only
+ * ever taken from a live one.
+ */
+async function resolveImportPractice(
+  orgId: string,
+  requested: string | undefined,
+): Promise<string | null> {
+  if (requested) {
+    const chosen = await prisma.practice.findFirst({
+      where: { id: requested, orgId },
+      select: { id: true },
+    })
+    if (chosen) return chosen.id
+    // Falls through rather than 400s. The customer's file is parsed, valid and
+    // in front of them; refusing the whole upload over a stale dropdown would
+    // trade a misfiled row for a lost import.
+    console.warn('import commit: practice %s is not in org %s, using default', requested, orgId)
+  }
+
+  const fallback = await prisma.practice.findFirst({
+    where: { orgId, isDefault: true, archivedAt: null },
+    select: { id: true },
+  })
+  return fallback?.id ?? null
 }
 
 export async function POST(request: Request) {
@@ -166,9 +212,31 @@ export async function POST(request: Request) {
     // which is the confusion the old /demo split existed to prevent.
     await dropSamplePractice(prisma, org.orgId)
 
+    /*
+      Which clinic this file belongs to.
+
+      This is the ONE place a practiceId is chosen. Everything downstream — the
+      worklist filter, the tinted strip, the export, the signature block on a
+      letter — reads what is written here, so a file filed under the wrong
+      clinic is a mistake that follows the rows for the life of the workspace.
+
+      Three rules, in order:
+        1. Never trust the form. The id is re-read against this org, so a
+           stale page or a hand-edited request cannot file rows into a
+           workspace that is not the caller's.
+        2. Fall back to the default practice, not to null. A customer who has
+           set up their clinics and forgot to pick one wants their rows in the
+           usual place, not in an unfiled pile they have to discover.
+        3. Fall back to null when there are no practices at all — which is
+           every workspace that has never opened the feature, and is exactly
+           how it goes on behaving as it did before.
+    */
+    const practiceId = await resolveImportPractice(org.orgId, read.upload.practiceId)
+
     const batch = await prisma.importBatch.create({
       data: {
         orgId: org.orgId,
+        practiceId,
         kind: parsed.kind === 'claims' ? 'CLAIMS' : 'DENIALS',
         filename: preview.filename,
         rowCount: parsed.rows.length,
@@ -180,6 +248,9 @@ export async function POST(request: Request) {
               claims: {
                 create: parsed.rows.map(row => ({
                   orgId: org.orgId,
+                  // Denormalised from the batch rather than joined on read.
+                  // See the practiceId comment on OrgClaim in schema.prisma.
+                  practiceId,
                   claimNumber: row.claimNumber ?? null,
                   payer: row.payer ?? null,
                   status: row.status,
@@ -201,6 +272,9 @@ export async function POST(request: Request) {
               rows: {
                 create: parsed.rows.map(row => ({
                   orgId: org.orgId,
+                  // Same denormalisation, and the one the worklist query
+                  // filters on directly. See DenialRow in schema.prisma.
+                  practiceId,
                   claimNumber: row.claimNumber ?? null,
                   payer: row.payer ?? null,
                   carc: row.carc,

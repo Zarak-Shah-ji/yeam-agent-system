@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button'
 import { UpgradeButton, PlanChip } from '@/components/subscription/Upgrade'
 import { isUpgradeRequired, upgradeReason } from '@/lib/plans'
 import { Skeleton } from '@/components/ui/skeleton'
+import { VerdictPanel } from './detail/VerdictPanel'
 
 const SCOPE_LABEL: Record<string, string> = {
   'payer+cpt': 'this payer, this code',
@@ -56,19 +57,23 @@ export function CodeReviewPanel({
   }
   if (!signals.data) return null
 
-  const { signals: s, available, cached } = signals.data
+  const { signals: s, available, cached, verdict, predictionAvailable } = signals.data
   const body = review.data?.body ?? cached?.body ?? null
   const at = review.data?.at ?? cached?.at ?? null
 
   return (
-    <div className="rounded-md border border-gray-200 p-3">
+    // No border and no heading of its own: this now renders as the body of a
+    // Section, which supplies both. A box inside a box under a repeated label
+    // was the clutter the stepped detail exists to remove.
+    <div>
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <p className="text-xs font-medium uppercase tracking-wide text-gray-500">Code review</p>
-        {s.coherence === 'consistent' && (
+        {s.coherence === 'consistent' ? (
           <Badge variant="success" className="gap-1">
             <Check className="h-3 w-3" aria-hidden="true" />
             Pairing checks out
           </Badge>
+        ) : (
+          <span />
         )}
       </div>
 
@@ -148,6 +153,14 @@ export function CodeReviewPanel({
           ))}
         </ul>
       )}
+
+      {/* The verdict sits between the computed evidence and the written
+          reading of it, which is the order they are actually produced in. */}
+      <VerdictPanel
+        claimNumber={claimNumber}
+        verdict={verdict}
+        available={predictionAvailable}
+      />
 
       {body && (
         <div className="mt-3 border-t border-gray-200 pt-3">

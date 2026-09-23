@@ -3,6 +3,7 @@ import type { Content, Part } from '@google/generative-ai'
 import { prisma } from '@/lib/db'
 import { requireOrg } from '@/lib/org'
 import { GEMINI_AVAILABLE, getModel } from '@/lib/ai/gemini-client'
+import { finishReasonMessage, looksLikeRefusal } from '@/lib/ai/refusal'
 import {
   executeWorkspaceTool,
   isWorkspaceTool,
@@ -43,9 +44,10 @@ Rules:
 - When the user names a specific claim, code or payer, pass it to worklist_rows as its search argument rather than pulling a ranked list and reading it yourself. If the search comes back empty, say the workspace has no row matching that text — do not offer the nearest thing you saw as if it matched.
 - Report what the tools return. If a tool comes back empty, say the workspace has no such data yet and suggest importing a file on the Connect data page — do not invent an example.
 - If a result is marked partial, say the totals are a floor, not a total.
-- The data is de-identified by design: there are no patient names, member IDs or dates of birth, and you cannot look a patient up. Say so plainly if asked.
-- You can read but not change anything. If asked to mark a row worked, send an appeal or edit a claim, explain that it has to be done on the Worklist page.
-- Money in US dollars. Be brief and concrete — a biller wants the number and the next action, not a preamble.`
+- The data is de-identified by design: no patient names, member IDs or dates of birth. When someone asks about a patient, answer with the claim number, payer, denial code and dollar amount — in this workspace that is what identifies a claim, so give that rather than describing what is missing.
+- You read; the biller acts. When asked to mark a row worked, send an appeal or edit a claim, name the exact row — claim number and code — and say it is one click on the Worklist page. That is a direction, not a refusal.
+- Money in US dollars. Be brief and concrete — a biller wants the number and the next action, not a preamble.
+- You always have something to say. If a tool returns nothing, report the zero as a finding and name the next action. Never answer with only an apology, and never open by saying what you cannot do.`
 
 /**
  * The wire format for one turn.
@@ -61,7 +63,12 @@ type SSEEvent =
   | { type: 'tool_call'; tool: string; args: Record<string, unknown> }
   | { type: 'tool_result'; step: TraceStep }
   | { type: 'text'; content: string }
-  | { type: 'done'; agentName: string }
+  /**
+   * `refused` marks an answer that is prose but not an answer — the model
+   * declining rather than failing. It is not an `error` event because the text
+   * is worth keeping on screen; it only earns the turn a Retry button.
+   */
+  | { type: 'done'; agentName: string; refused: boolean }
   | { type: 'error'; message: string }
 
 export async function POST(req: NextRequest) {
@@ -135,8 +142,14 @@ export async function POST(req: NextRequest) {
           { role: 'user', parts: [{ text: message }] },
         ]
 
-        const model = getModel(SYSTEM_PROMPT)
+        // 0.2 rather than the 0.3 the drafting paths use: this surface reports
+        // what the tools returned. The same question twice should give the same
+        // answer twice, which is what a biller checking a number expects.
+        const model = getModel(SYSTEM_PROMPT, { temperature: 0.2 })
         const first = await model.generateContent({ contents, tools: workspaceTools })
+
+        const firstStop = finishReasonMessage(first.response.candidates?.[0]?.finishReason)
+        if (firstStop) throw new Error(firstStop)
         const firstParts = first.response.candidates?.[0]?.content.parts ?? []
         const calls = firstParts.filter(p => p.functionCall)
 
@@ -151,7 +164,7 @@ export async function POST(req: NextRequest) {
 
               const known = isWorkspaceTool(call.name)
               const result = known
-                ? await executeWorkspaceTool(prisma, org.orgId, call.name, args)
+                ? await executeWorkspaceTool(prisma, org.orgId, call.name, args, org.practiceWhere)
                 // A hallucinated tool name is told to the model rather than
                 // thrown, so it can correct itself instead of the turn dying.
                 : { error: `No such tool: ${call.name}` }
@@ -167,12 +180,14 @@ export async function POST(req: NextRequest) {
             }),
           )
 
+          const answered = [
+            ...contents,
+            { role: 'model', parts: firstParts },
+            { role: 'user', parts: responses },
+          ]
+
           const second = await model.generateContentStream({
-            contents: [
-              ...contents,
-              { role: 'model', parts: firstParts },
-              { role: 'user', parts: responses },
-            ],
+            contents: answered,
             tools: workspaceTools,
           })
 
@@ -183,12 +198,52 @@ export async function POST(req: NextRequest) {
               send({ type: 'text', content: text })
             }
           }
+
+          const secondStop = finishReasonMessage(
+            (await second.response).candidates?.[0]?.finishReason,
+          )
+          if (secondStop && !finalText.trim()) throw new Error(secondStop)
+
+          // The tools ran and returned; coming back empty is the model losing
+          // the thread, not an absence of data. One nudge, never a loop — a
+          // second empty answer is a real failure and should read as one.
+          if (!finalText.trim()) {
+            const retry = await model.generateContentStream({
+              contents: [
+                ...answered,
+                {
+                  role: 'user',
+                  parts: [{
+                    text: 'Answer the question now from the tool results above. '
+                      + 'Report the figures you were given and name the next action.',
+                  }],
+                },
+              ],
+              tools: workspaceTools,
+            })
+            for await (const chunk of retry.stream) {
+              const text = chunk.text()
+              if (text) {
+                finalText += text
+                send({ type: 'text', content: text })
+              }
+            }
+          }
         } else {
           finalText = first.response.text()
           send({ type: 'text', content: finalText })
         }
 
-        send({ type: 'done', agentName: AGENT_NAME })
+        // A refusal is prose, so nothing upstream treats it as a failure and the
+        // Retry button never appears — leaving the user staring at "I cannot"
+        // with no way forward. The text still shows exactly as it came back;
+        // this only earns them a second attempt.
+        const refused = looksLikeRefusal(finalText)
+        if (!finalText.trim()) {
+          throw new Error('The model returned an empty answer. Try the question again.')
+        }
+
+        send({ type: 'done', agentName: AGENT_NAME, refused })
 
         // Awaited, unlike the activity log below: the client reloads this
         // conversation from the database on the next mount, so a write that
@@ -197,6 +252,7 @@ export async function POST(req: NextRequest) {
           content: finalText,
           trace,
           agentName: AGENT_NAME,
+          isError: refused,
         })
 
         prisma.agentLog.create({

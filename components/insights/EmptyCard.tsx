@@ -16,10 +16,20 @@ export function EmptyCard({
   title,
   need,
   children,
+  action,
 }: {
   title: string
   need: string
   children?: React.ReactNode
+  /**
+   * Replaces the import button.
+   *
+   * Not everything empty here is waiting on a file. Appeal outcomes are
+   * assembled from what this workspace sent and what came back, and there is
+   * no export that fills them — pointing that reader at the import page sends
+   * them somewhere that cannot help.
+   */
+  action?: React.ReactNode
 }) {
   return (
     <Card>
@@ -28,9 +38,11 @@ export function EmptyCard({
         <p className="mt-2 text-sm font-medium text-gray-900">{title}</p>
         <p className="mx-auto mt-1 max-w-md text-sm text-gray-500">{need}</p>
         {children}
-        <Button asChild variant="outline" size="sm" className="mt-4">
-          <Link href="/connect">Import a file</Link>
-        </Button>
+        {action ?? (
+          <Button asChild variant="outline" size="sm" className="mt-4">
+            <Link href="/connect">Import a file</Link>
+          </Button>
+        )}
       </CardContent>
     </Card>
   )

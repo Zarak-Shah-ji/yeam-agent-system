@@ -37,6 +37,12 @@ export type TimelineDraft = {
   version: number
   artifact: string
   createdAt: Date
+  /**
+   * Who wrote this version. Optional so a caller that has not selected the
+   * column still gets a timeline — it reads as the model's, which is what every
+   * version was before the letter became editable.
+   */
+  source?: 'MODEL' | 'BILLER' | null
 }
 
 export type TimelineSubmission = {
@@ -47,6 +53,15 @@ export type TimelineSubmission = {
   notes: string | null
 }
 
+/**
+ * One map for both event tables.
+ *
+ * ClaimEventKind and DenialEventKind overlap on three of their members and
+ * differ on the rest, and the two are read by the same builder — a claim's
+ * history and its denial row's history are the same history seen from two
+ * pages. A kind with no entry falls back to its own name, so an enum member
+ * added without a label here reads as SHOUTY_CASE rather than as a blank.
+ */
 const EVENT_LABEL: Record<string, string> = {
   STATUS_CHANGED: 'Status changed',
   NOTE_ADDED: 'Note',
@@ -54,6 +69,10 @@ const EVENT_LABEL: Record<string, string> = {
   CODE_CORRECTED: 'Code corrected',
   REVIEWED: 'Reviewed',
   SENT_TO_WORKLIST: 'Added to worklist',
+  // DenialEventKind only. An appeal that came back denied is not finished work,
+  // and the row going back to "to work" is the single most important thing in
+  // its history — it is the difference between one attempt and three.
+  REOPENED: 'Reopened',
 }
 
 const CHANNEL_LABEL: Record<string, string> = {
@@ -104,7 +123,16 @@ export function buildClaimTimeline(input: {
     entries.push({
       at: d.createdAt,
       kind: 'draft',
-      label: d.version === 1 ? 'Response drafted' : `Draft revised (v${d.version})`,
+      // "Edited" rather than "revised": a biller who rewrote the third
+      // paragraph and a model that rewrote the whole letter are different
+      // events, and a history that calls both a revision cannot answer "did
+      // anyone actually read this before it went".
+      label:
+        d.source === 'BILLER'
+          ? `Letter edited (v${d.version})`
+          : d.version === 1
+            ? 'Response drafted'
+            : `Draft revised (v${d.version})`,
       detail: d.artifact,
       actorId: null,
     })
@@ -139,4 +167,25 @@ export function buildClaimTimeline(input: {
  */
 export function followUpCount(submissions: TimelineSubmission[]): number {
   return submissions.length
+}
+
+/**
+ * The last thing a person did to this claim, or null if nobody has.
+ *
+ * The claim detail used to answer this by rendering three timeline entries near
+ * the top and letting the reader work it out. That is the right list to have and
+ * the wrong place to make somebody read one — "has anyone already chased this"
+ * is the question that decides whether to pick up the phone at all, and a biller
+ * who gets it wrong has burned twenty minutes and their place in a hold queue.
+ * So it is now one clause on the headline, and the list is one click down.
+ *
+ * The import is not a touch. It is the only entry in the list that no colleague
+ * did, and counting it would mean every claim in a fresh snapshot reports as
+ * worked — which is the exact false negative this is here to prevent.
+ *
+ * Entries arrive newest-first from buildClaimTimeline, so this is the first
+ * qualifying one rather than a second sort.
+ */
+export function lastHumanTouch(entries: TimelineEntry[]): TimelineEntry | null {
+  return entries.find(e => e.kind !== 'imported') ?? null
 }

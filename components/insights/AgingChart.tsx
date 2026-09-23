@@ -9,6 +9,8 @@ interface DataPoint {
   bucket: string
   amount: number
   count: number
+  avgDays: number | null
+  oldestDays: number | null
 }
 
 /**
@@ -50,14 +52,31 @@ export function AgingChart({ data }: { data: DataPoint[] }) {
                 labelFormatter={label => `${label} days`}
                 rows={items => {
                   const row = items[0]?.payload as DataPoint | undefined
-                  return [
+                  const colour =
+                    fills[data.findIndex(d => d.bucket === row?.bucket)] ?? theme.ordinal[0]
+                  const rows = [
                     {
                       key: 'amount',
                       name: `across ${row?.count ?? 0} claims`,
                       value: usd(Number(items[0]?.value ?? 0)),
-                      color: fills[data.findIndex(d => d.bucket === row?.bucket)] ?? theme.ordinal[0],
+                      color: colour,
                     },
                   ]
+                  // The band is a range; this is how old the money in it
+                  // actually is. Omitted rather than shown as 0d when the
+                  // bucket is empty — see AgingRow.avgDays.
+                  if (row?.avgDays !== null && row?.avgDays !== undefined) {
+                    rows.push({
+                      key: 'age',
+                      name: 'average age',
+                      value:
+                        row.oldestDays !== null && row.oldestDays !== row.avgDays
+                          ? `${row.avgDays}d · oldest ${row.oldestDays}d`
+                          : `${row.avgDays}d`,
+                      color: colour,
+                    })
+                  }
+                  return rows
                 }}
               />
             }

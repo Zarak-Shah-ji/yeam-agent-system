@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { useState } from 'react'
 import {
   AlertTriangle,
   Check,
@@ -8,7 +8,6 @@ import {
   Download,
   ExternalLink,
   Loader2,
-  Lock,
   MapPin,
   Paperclip,
   Printer,
@@ -18,7 +17,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
-import { findPlaceholders, mergeLetter, type Placeholder } from '@/lib/appeals/merge'
+import type { Placeholder } from '@/lib/appeals/merge'
 import {
   SAVEABLE_CHANNELS,
   SUBMISSION_CHANNELS,
@@ -33,14 +32,18 @@ import {
  *
  *  1. THE LETTER ARRIVES INCOMPLETE, ON PURPOSE. Every draft from a worklist row
  *     carries [PATIENT NAME], [MEMBER ID] and [DATE OF BIRTH], because no table
- *     in this app has a column for one. So the panel has to finish the letter.
+ *     in this app has a column for one. So the letter has to be finished, and
+ *     CompleteLetter does it — next to the editor now, rather than buried down
+ *     here, because the distance was what made typing a name into the body look
+ *     like the easier option.
  *
- *  2. FINISHING IT MUST NOT MOVE PHI ONTO THE SERVER. The patient fields below
- *     live in component state, are merged by lib/appeals/merge.ts in the
- *     browser, and are printed from the browser. They are never an argument to a
- *     mutation. recordSubmission's input is .strict() and names no patient
- *     field, so this cannot drift by accident — but do not reach for a server
- *     round-trip here, because that is the property being protected.
+ *  2. FINISHING IT MUST NOT MOVE PHI ONTO THE SERVER. The patient values live in
+ *     WorkPanel's state, are merged by lib/appeals/merge.ts in the browser, and
+ *     arrive here already merged — `merged` is a render, produced upstream, and
+ *     this panel copies, downloads and prints it without ever holding the values
+ *     that produced it. recordSubmission's input is .strict() and names no
+ *     patient field, so this cannot drift by accident — but do not reach for a
+ *     server round-trip here, because that is the property being protected.
  *
  *  3. "SENT" HAS TO MEAN SOMETHING. Marking a row sent recorded that a button
  *     was clicked. A payer refusing an appeal as untimely is answered with a
@@ -76,23 +79,29 @@ export function SendPanel({
   rowId,
   draftId,
   draftVersion,
-  body,
+  merged,
+  stillMissing,
   claimLabel,
   onRecorded,
 }: {
   rowId: string
   draftId: string
   draftVersion: number
-  body: string
+  /**
+   * The letter as it will actually go out: the live body with the browser's own
+   * values merged in. A string, computed upstream and passed down — this panel
+   * never sees the values, which is the whole point.
+   */
+  merged: string
+  /** Slots still bracketed after that merge — what "still blank" counts. */
+  stillMissing: Placeholder[]
   claimLabel: string
   onRecorded: () => void
 }) {
   const utils = trpc.useUtils()
   const destination = trpc.worklist.destination.useQuery({ rowId })
-  const practice = trpc.settings.practice.useQuery()
   const submissions = trpc.worklist.submissions.useQuery({ rowId })
 
-  const [values, setValues] = useState<Record<string, string>>({})
   const [channel, setChannel] = useState<SubmissionChannelValue | ''>('')
   const [destinationLabel, setDestinationLabel] = useState('')
   const [sentAt, setSentAt] = useState(toDateInput(new Date()))
@@ -129,44 +138,6 @@ export function SendPanel({
     },
   })
 
-  const slots = useMemo(() => findPlaceholders(body), [body])
-
-  /**
-   * Practice fields fill themselves from the workspace; patient fields never do.
-   *
-   * The org profile is the whole reason /settings exists — an NPI retyped on
-   * every appeal is the kind of friction that sends people back to Word.
-   */
-  const practiceValues = useMemo(() => {
-    const p = practice.data
-    if (!p) return {}
-    const address = [p.addressLine1, p.addressLine2, [p.city, p.state, p.postalCode].filter(Boolean).join(', ')]
-      .filter(Boolean)
-      .join('\n')
-    return {
-      'PRACTICE NAME': p.practiceName ?? '',
-      'PROVIDER NAME': p.practiceName ?? '',
-      PROVIDER: p.practiceName ?? '',
-      NPI: p.npi ?? '',
-      TIN: p.tin ?? '',
-      'TAX ID': p.tin ?? '',
-      'PRACTICE ADDRESS': address,
-      'PRACTICE PHONE': p.contactPhone ?? '',
-      'CONTACT NAME': p.contactName ?? '',
-      PHONE: p.contactPhone ?? '',
-      FAX: p.contactFax ?? '',
-    } as Record<string, string>
-  }, [practice.data])
-
-  const allValues = useMemo(() => ({ ...practiceValues, ...values }), [practiceValues, values])
-  const merged = useMemo(() => mergeLetter(body, allValues), [body, allValues])
-  const stillMissing = useMemo(() => findPlaceholders(merged), [merged])
-
-  const patientSlots = slots.filter(s => s.owner === 'patient')
-  const otherSlots = slots.filter(s => s.owner === 'other')
-  const practiceSlots = slots.filter(s => s.owner === 'practice')
-  const practiceGaps = practiceSlots.filter(s => !practiceValues[s.key]?.trim())
-
   const dest = destination.data
   const ready = stillMissing.length === 0
 
@@ -201,27 +172,6 @@ export function SendPanel({
     if (!host) return
     host.textContent = merged
     window.print()
-  }
-
-  function field(slot: Placeholder) {
-    return (
-      <div key={slot.key}>
-        <label
-          htmlFor={`slot-${slot.key}`}
-          className="text-xs font-medium text-gray-600"
-        >
-          {slot.label}
-        </label>
-        <Input
-          id={`slot-${slot.key}`}
-          className="mt-1"
-          value={values[slot.key] ?? ''}
-          autoComplete="off"
-          spellCheck={false}
-          onChange={e => setValues(v => ({ ...v, [slot.key]: e.target.value }))}
-        />
-      </div>
-    )
   }
 
   return (
@@ -311,41 +261,7 @@ export function SendPanel({
         )}
       </div>
 
-      {/* ── 2. Complete it ────────────────────────────────────────────────── */}
-      {slots.length > 0 && (
-        <div className="rounded-md border border-gray-200 p-3">
-          <p className="text-xs font-medium uppercase tracking-wide text-gray-500">
-            Complete the letter
-          </p>
-
-          {patientSlots.length > 0 && (
-            <>
-              <p className="mt-2 flex items-start gap-1.5 rounded-md bg-gray-50 px-3 py-2 text-xs text-gray-600">
-                <Lock className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-                Typed here only. Patient details are merged into the letter in your browser and are
-                never sent to Yeam — that is why the draft arrives with these blank.
-              </p>
-              <div className="mt-3 grid gap-3 sm:grid-cols-2">{patientSlots.map(field)}</div>
-            </>
-          )}
-
-          {otherSlots.length > 0 && (
-            <div className="mt-3 grid gap-3 sm:grid-cols-2">{otherSlots.map(field)}</div>
-          )}
-
-          {practiceGaps.length > 0 && (
-            <p className="mt-3 text-xs text-gray-600">
-              {practiceGaps.map(s => s.label).join(', ')} would fill in automatically from{' '}
-              <a href="/settings" className="font-medium text-blue-700 underline">
-                your practice profile
-              </a>
-              .
-            </p>
-          )}
-        </div>
-      )}
-
-      {/* ── 3. Take the packet ────────────────────────────────────────────── */}
+      {/* ── 2. Take the packet ────────────────────────────────────────────── */}
       <div>
         {!ready && (
           <p className="mb-2 text-xs text-amber-700">
@@ -373,7 +289,7 @@ export function SendPanel({
         </div>
       </div>
 
-      {/* ── 4. Record it ──────────────────────────────────────────────────── */}
+      {/* ── 3. Record it ──────────────────────────────────────────────────── */}
       <div className="rounded-md border border-gray-200 p-3">
         <p className="text-xs font-medium uppercase tracking-wide text-gray-500">
           Record the submission

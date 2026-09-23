@@ -9,9 +9,7 @@ import { ChatProvider } from '@/components/layout/chat-context'
 import { SessionProviderWrapper } from '@/components/layout/SessionProviderWrapper'
 import { Sidebar } from '@/components/layout/Sidebar'
 import { MobileBackdrop } from '@/components/layout/MobileBackdrop'
-import { HamburgerButton } from '@/components/layout/HamburgerButton'
-import { PageTitle } from '@/components/layout/PageTitle'
-import { AgentTrigger } from '@/components/agent/AgentTrigger'
+import { TopBar } from '@/components/layout/TopBar'
 import { AgentRail } from '@/components/agent/AgentRail'
 import { AgentOverlay } from '@/components/agent/AgentOverlay'
 
@@ -55,12 +53,9 @@ export default async function DashboardLayout({
 
         {/* Main area */}
         <div className="flex flex-1 flex-col overflow-hidden min-w-0">
-          {/* Top bar */}
-          <div className="flex h-14 shrink-0 items-center gap-2 border-b border-gray-200 bg-white px-3 md:px-4">
-            <HamburgerButton />
-            <PageTitle />
-            <AgentTrigger />
-          </div>
+          {/* Top bar. A client component because it tints itself when the
+              view is isolated to one practice — see TopBar.tsx. */}
+          <TopBar />
 
           {/* Content + agent rail */}
           <div className="flex flex-1 overflow-hidden min-w-0">

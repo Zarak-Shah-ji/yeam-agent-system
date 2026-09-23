@@ -133,6 +133,53 @@ describe('arAging', () => {
     expect(buckets).toHaveLength(5)
     expect(buckets.every(b => b.amount === 0)).toBe(true)
   })
+
+  it('reports the average and oldest age of each bucket', () => {
+    const { buckets } = arAging(
+      [
+        claim({ billed: 100, serviceDate: daysAgo(130) }),
+        claim({ billed: 100, serviceDate: daysAgo(200) }),
+        claim({ billed: 100, serviceDate: daysAgo(400) }),
+      ],
+      TODAY,
+    )
+    const oldest = buckets.find(b => b.bucket === '120+')!
+    expect(oldest.count).toBe(3)
+    // (130 + 200 + 400) / 3
+    expect(oldest.avgDays).toBe(243)
+    expect(oldest.oldestDays).toBe(400)
+  })
+
+  it('averages per claim, not weighted by dollars', () => {
+    // One large fresh claim against one small old one. A dollar-weighted mean
+    // would land near 10 days; this is deliberately the plain mean.
+    const { buckets } = arAging(
+      [
+        claim({ billed: 10_000, serviceDate: daysAgo(10) }),
+        claim({ billed: 100, serviceDate: daysAgo(20) }),
+      ],
+      TODAY,
+    )
+    expect(buckets.find(b => b.bucket === '0-30')!.avgDays).toBe(15)
+  })
+
+  it('leaves an empty bucket null rather than zero days', () => {
+    // Zero would read as "these are brand new" instead of "there are none".
+    const { buckets } = arAging([claim({ serviceDate: daysAgo(5) })], TODAY)
+    expect(buckets.find(b => b.bucket === '0-30')!.avgDays).toBe(5)
+    for (const empty of buckets.filter(b => b.count === 0)) {
+      expect(empty.avgDays).toBeNull()
+      expect(empty.oldestDays).toBeNull()
+    }
+  })
+
+  it('does not age an undated balance into the day counts', () => {
+    const { buckets } = arAging(
+      [claim({ billed: 90, serviceDate: null, submittedDate: null, remitDate: null })],
+      TODAY,
+    )
+    expect(buckets.every(b => b.avgDays === null && b.oldestDays === null)).toBe(true)
+  })
 })
 
 describe('anchorDate', () => {
@@ -258,6 +305,53 @@ describe('payerScorecard', () => {
   it('excludes settled denials from open work', () => {
     const rows = payerScorecard([], [denial({ status: 'PAID' }), denial({ status: 'DEAD' })], TODAY)
     expect(rows).toHaveLength(0)
+  })
+
+  it('lists every reason the payer denies on, topCarc first', () => {
+    const [aetna] = payerScorecard(claims, denials, TODAY)
+    expect(aetna.reasons.map(r => r.carc)).toEqual(['CO-97', 'CO-11'])
+    expect(aetna.reasons[0]).toMatchObject({ carc: 'CO-97', count: 2, billed: 800 })
+    expect(aetna.reasons[0].carc).toBe(aetna.topCarc!.carc)
+  })
+
+  it('reports the expiring slice of at-stake without adding it on', () => {
+    // Aetna's window is 180 days, so a denial 170 days old has 10 left.
+    const rows = payerScorecard(
+      [],
+      [
+        denial({ payer: 'Aetna', billed: 500, denialDate: daysAgo(170) }),
+        denial({ payer: 'Aetna', billed: 300, denialDate: daysAgo(10) }),
+      ],
+      TODAY,
+    )
+    expect(rows[0].atStake).toBe(800)
+    expect(rows[0].expiringSoon).toBe(500)
+  })
+
+  it('reports expired money separately and never inside at-stake', () => {
+    const rows = payerScorecard(
+      [],
+      [
+        denial({ payer: 'Aetna', billed: 500, denialDate: daysAgo(200) }),
+        denial({ payer: 'Aetna', billed: 300, denialDate: daysAgo(10) }),
+      ],
+      TODAY,
+    )
+    expect(rows[0].atStake).toBe(300)
+    expect(rows[0].expired).toBe(1)
+    expect(rows[0].expiredBilled).toBe(500)
+    expect(rows[0].expiringSoon).toBe(0)
+  })
+
+  it('does not count a dateless denial as expiring — there is no clock', () => {
+    const rows = payerScorecard(
+      [],
+      [denial({ payer: 'Aetna', billed: 500, denialDate: null })],
+      TODAY,
+    )
+    expect(rows[0].atStake).toBe(500)
+    expect(rows[0].expiringSoon).toBe(0)
+    expect(rows[0].expired).toBe(0)
   })
 })
 
