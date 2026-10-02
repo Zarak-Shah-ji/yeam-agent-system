@@ -112,7 +112,7 @@ export function PayerScorecard() {
     return (
       <EmptyCard
         title="No payers yet"
-        need="Import a denials or A/R export and every payer in it gets a scorecard here."
+        need="Import a denials or A/R file and every payer in it gets a scorecard here."
       />
     )
   }
@@ -128,7 +128,7 @@ export function PayerScorecard() {
 
       {!hasSnapshot && (
         <p className="rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-900">
-          These rows come from your denials only. Import an A/R export to add denial rates and
+          These rows come from your denials only. Import an A/R file to add denial rates and
           days to pay — those need every claim, not just the denied ones.
         </p>
       )}

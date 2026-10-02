@@ -109,7 +109,7 @@ export function InsightsView() {
     return (
       <EmptyCard
         title="Nothing imported yet"
-        need="Import a denials export to see what is recoverable, or an A/R export to see collection rates and aging."
+        need="Import a denials file to see what is recoverable, or an A/R file to see collection rates and aging."
       />
     )
   }
@@ -169,26 +169,26 @@ export function InsightsView() {
         <Tile
           label="Billed"
           value={claims ? usd(claims.billed) : '—'}
-          sub={claims ? `${claims.total} claims` : 'Needs an A/R export'}
+          sub={claims ? `${claims.total} claims` : 'Needs an A/R file'}
           loading={loading}
         />
         <Tile
           label="Collected"
           value={claims ? usd(claims.paid) : '—'}
-          sub={claims ? `${pct(claims.grossCollectionRate)} of billed` : 'Needs an A/R export'}
+          sub={claims ? `${pct(claims.grossCollectionRate)} of billed` : 'Needs an A/R file'}
           tone="good"
           loading={loading}
         />
         <Tile
           label="Outstanding A/R"
           value={claims ? usd(claims.outstanding) : '—'}
-          sub={claims ? 'Still owed by payers' : 'Needs an A/R export'}
+          sub={claims ? 'Still owed by payers' : 'Needs an A/R file'}
           loading={loading}
         />
         <Tile
           label="Denial rate"
           value={claims ? pct(claims.denialRate) : '—'}
-          sub={claims ? `${claims.denied} of ${claims.total} claims` : 'Needs an A/R export'}
+          sub={claims ? `${claims.denied} of ${claims.total} claims` : 'Needs an A/R file'}
           tone={claims && (claims.denialRate ?? 0) > 10 ? 'danger' : 'default'}
           loading={loading}
         />
@@ -250,7 +250,7 @@ export function InsightsView() {
             ) : (
               <EmptyCard
                 title="No revenue history"
-                need="An A/R export with service dates gives billed against collected by month."
+                need="An A/R file with service dates gives billed against collected by month."
               />
             )}
           </CardContent>
@@ -316,7 +316,7 @@ export function InsightsView() {
             ) : (
               <EmptyCard
                 title="No outstanding balance"
-                need="An A/R export shows what each payer still owes, bucketed by age."
+                need="An A/R file shows what each payer still owes, bucketed by age."
               />
             )}
           </CardContent>
@@ -361,7 +361,7 @@ export function InsightsView() {
                   the honest thing to show; a rate here would always be 100%.
                   The chart plots those counts and is labelled as counts. */}
               <p className="mb-3 text-sm text-gray-500">
-                Counts, not a rate — a denial rate needs an A/R export to divide by.
+                Counts, not a rate — a denial rate needs an A/R file to divide by.
               </p>
               {view === 'chart' ? (
                 <DenialCountChart data={denialCounts} />
@@ -387,7 +387,7 @@ export function InsightsView() {
               )}
             </div>
           ) : (
-            <EmptyCard title="No denial history" need="Import a denials or A/R export to see this." />
+            <EmptyCard title="No denial history" need="Import a denials or A/R file to see this." />
           )}
         </CardContent>
       </Card>
@@ -466,7 +466,7 @@ export function InsightsView() {
                 </Table>
               )
             ) : (
-              <EmptyCard title="No denials on the worklist" need="Import a denials export to see this." />
+              <EmptyCard title="No denials on the worklist" need="Import a denials file to see this." />
             )}
           </CardContent>
         </Card>

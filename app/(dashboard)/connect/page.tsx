@@ -6,7 +6,7 @@ export default function ConnectPage() {
       <div>
         <h1 className="text-2xl font-bold text-gray-900">Connect your data</h1>
         <p className="text-sm text-gray-500">
-          Upload an export, or connect the system it comes from
+          Import a file, or connect the system it comes from
         </p>
       </div>
       <ConnectView />

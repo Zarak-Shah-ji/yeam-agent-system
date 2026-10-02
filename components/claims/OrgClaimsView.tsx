@@ -178,7 +178,7 @@ export function OrgClaimsView() {
     return (
       <EmptyCard
         title="No claims imported"
-        need="An A/R or all-claims export fills this table, and gives every rate in Analytics a denominator. A denials export alone only covers the denied ones."
+        need="Importing an A/R or all-claims file fills this table, and gives every rate in Analytics a denominator. A denials file alone only covers the denied ones."
       >
         {/*
           The specific dead end this answers: an A/R export imported through the

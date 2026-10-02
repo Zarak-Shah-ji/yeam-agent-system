@@ -63,19 +63,19 @@ export function ConnectView() {
       <section>
         <h2 className="text-base font-semibold text-gray-900">Import a file</h2>
         <p className="mt-1 text-sm text-gray-500">
-          Two exports, and the product knows your practice. Neither needs an API or an IT ticket.
+          Two files from your billing system, and the product knows your practice. Neither needs an API or an IT ticket.
         </p>
 
         <div className="mt-3 grid gap-4 lg:grid-cols-2">
           <ImportBox
             profile="denials"
-            title="Denials export"
+            title="Import denials"
             description="Your denied claims, last 90 days. Becomes your worklist, sorted by filing deadline."
             onImported={handleImported}
           />
           <ImportBox
             profile="claims"
-            title="A/R + claims export"
+            title="Import A/R + claims"
             description="Every claim, paid and unpaid. Gives collection rates, aging and a real denial rate — a denials file alone has no denominator."
             onImported={handleImported}
           />
@@ -126,7 +126,7 @@ export function ConnectView() {
                       {batch.kind === 'CLAIMS' && !batch.active && (
                         <span
                           className="ml-2 text-xs text-gray-500"
-                          title="Only your most recent claims snapshot is read, so two exports never double-count"
+                          title="Only your most recent claims snapshot is read, so two imports never double-count"
                         >
                           superseded
                         </span>
@@ -182,7 +182,7 @@ export function ConnectView() {
           )}
         </div>
         <p className="mt-1 text-sm text-gray-500">
-          Skip the export entirely and have your denials read on a schedule. Each connection is
+          Skip the file entirely and have your denials read on a schedule. Each connection is
           built against a specific system, so it comes with a custom plan — tell us which one and
           we&rsquo;ll get in touch.
         </p>

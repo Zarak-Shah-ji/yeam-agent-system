@@ -207,7 +207,7 @@ export function PayerCharts({
             format={v => `${v.toFixed(1)}%`}
             reference={{ value: 10, label: '10% target' }}
             onSelect={onSelect}
-            emptyLabel="Needs an A/R export — a denial rate has to divide by every claim, not just the denied ones."
+            emptyLabel="Needs an A/R file — a denial rate has to divide by every claim, not just the denied ones."
           />
         </ChartCard>
 
@@ -216,7 +216,7 @@ export function PayerCharts({
             data={byDaysToPay}
             format={v => `${Math.round(v)}d`}
             onSelect={onSelect}
-            emptyLabel="Needs an A/R export with submitted and remit dates."
+            emptyLabel="Needs an A/R file with submitted and remit dates."
           />
         </ChartCard>
       </div>

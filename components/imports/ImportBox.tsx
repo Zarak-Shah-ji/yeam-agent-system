@@ -60,13 +60,13 @@ type Preview = {
 }
 
 const PROFILE_LABEL: Record<ImportProfile, string> = {
-  denials: 'Denials export',
-  claims: 'A/R + claims export',
+  denials: 'Denials',
+  claims: 'A/R + claims',
 }
 
 const PROFILE_ARTICLE: Record<ImportProfile, string> = {
-  denials: 'a denials export',
-  claims: 'an A/R export',
+  denials: 'a denials file',
+  claims: 'an A/R file',
 }
 
 const UNMAPPED = '__none__'
@@ -304,8 +304,8 @@ export function ImportBox({
           <p className="mt-3 flex items-start gap-2 rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900">
             <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
             <span>
-              You dropped this on{' '}
-              <strong>{PROFILE_LABEL[preview.requestedProfile ?? preview.profile]}</strong>, but it
+              You dropped this on the{' '}
+              <strong>{PROFILE_LABEL[preview.requestedProfile ?? preview.profile]}</strong> import, but it
               has {listColumns(preview.detectionEvidence)} — that&rsquo;s{' '}
               {PROFILE_ARTICLE[preview.detectedProfile]}. Reading it as{' '}
               <strong>{PROFILE_LABEL[preview.profile]}</strong>. Change it above only if you are
@@ -323,7 +323,7 @@ export function ImportBox({
               {listColumns(preview.detectionEvidence)}. You have set it to{' '}
               <strong>{PROFILE_LABEL[preview.profile]}</strong>.{' '}
               {preview.profile === 'denials'
-                ? 'Importing an A/R export as denials puts paid claims on your worklist.'
+                ? 'Importing an A/R file as denials puts paid claims on your worklist.'
                 : 'Importing denials as a snapshot reports a 100% denial rate.'}
             </span>
           </p>
@@ -333,7 +333,7 @@ export function ImportBox({
           <p className="mt-3 flex items-start gap-2 rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900">
             <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
             <span>
-              This file could be read either way. Check the choice above — importing an A/R export
+              This file could be read either way. Check the choice above — importing an A/R file
               as denials puts paid claims on your worklist, and importing denials as a snapshot
               reports a 100% denial rate.
             </span>
@@ -456,7 +456,7 @@ export function ImportBox({
   /* --------------------------------------------------------------- idle --- */
 
   const heading =
-    title ?? (compact ? 'Import another export' : 'Drop your claims or denials export')
+    title ?? (compact ? 'Import another file' : 'Drop your claims or denials file')
 
   return (
     <div>
@@ -487,7 +487,7 @@ export function ImportBox({
             {!compact && (
               <p className="mt-1 text-sm text-gray-500">
                 {description ??
-                  'A .csv or .xlsx export from any billing system. No API, no IT ticket. You confirm what was read before anything is saved.'}
+                  'A .csv or .xlsx file from any billing system. No API, no IT ticket. You confirm what was read before anything is saved.'}
               </p>
             )}
           </div>
