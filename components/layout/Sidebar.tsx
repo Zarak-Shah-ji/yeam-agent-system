@@ -49,13 +49,20 @@ function ThemeIcon({ className }: { className: string }) {
   )
 }
 
-export function Sidebar() {
+export function Sidebar({
+  workspace,
+}: {
+  /** Resolved in the dashboard layout; `role` is null when nobody shares the workspace. */
+  workspace: { name: string; role: string | null } | null
+}) {
   const pathname = usePathname()
   const { isOpen, toggle, close } = useSidebar()
   const { data: session } = useSession()
   const { theme, toggle: toggleTheme } = useTheme()
   const userName = session?.user?.name
-  const userRole = (session?.user as { role?: string })?.role
+  const role = workspace?.role
+  const roleLabel = role ? role.charAt(0) + role.slice(1).toLowerCase().replace('_', ' ') : null
+  const subtitle = workspace ? [workspace.name, roleLabel].filter(Boolean).join(' · ') : null
   const initials = userName
     ? userName.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2)
     : '?'
@@ -126,9 +133,9 @@ export function Sidebar() {
             </Avatar>
             <div className="flex-1 min-w-0">
               <p className="text-xs font-medium text-gray-900 truncate">{userName ?? 'User'}</p>
-              {userRole && (
-                <p className="text-xs text-gray-500 truncate capitalize">
-                  {userRole.toLowerCase().replace('_', ' ')}
+              {subtitle && (
+                <p className="text-xs text-gray-500 truncate" title={subtitle}>
+                  {subtitle}
                 </p>
               )}
             </div>
